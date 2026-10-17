@@ -325,6 +325,7 @@ async function cargar(p){
   else if(p==='comisiones')S.comisiones=await dbGet('comisiones','?order=id.desc')||[];
   else if(p==='empaques')S.empaques=await dbGet('empaques','?order=id')||[];
   else if(p==='ajustes'){const c=await dbGet('config','?limit=1');if(c&&c[0])S.cfg={...S.cfg,...c[0]};}
+  if(p==='dashboard'||p==='tareas')S.tareas=await tareasGet();
 }
 
 function render(){document.getElementById('root').innerHTML=S.session?renderApp():renderLogin();}
@@ -381,6 +382,7 @@ const MAIN_PAGES=[
   {id:'inventario',icon:'ti-stack-2',label:'Inventario'},
 ];
 const MORE_PAGES=[
+  {id:'tareas',icon:'ti-checklist',label:'Tareas'},
   {id:'caja',icon:'ti-report-money',label:'Caja'},
   {id:'finanzas',icon:'ti-chart-pie',label:'Finanzas'},
   {id:'socios',icon:'ti-users',label:'Socios'},
@@ -397,7 +399,7 @@ const MORE_PAGES=[
 function renderApp(){
   const ALL_PAGES=[...MAIN_PAGES,...MORE_PAGES,...(isAdmin()?[{id:'ajustes',icon:'ti-settings',label:'Ajustes'}]:[])];
   const SECTIONS=[
-    {label:'OPERACIONES',pages:['dashboard','vender','pedidos']},
+    {label:'OPERACIONES',pages:['dashboard','vender','pedidos','tareas']},
     {label:'GESTIÓN',pages:['inventario','caja','finanzas','socios']},
     {label:'CONTABILIDAD',pages:['contabilidad-er','contabilidad-bg','contabilidad-fe']},
     {label:'MÁS',pages:['creditos','pedidos-proveedor','nomina','cierres','comisiones','empaques']},
@@ -444,7 +446,7 @@ function toggleMore(){
 }
 
 function renderPage(){
-  const pages={dashboard:pgDash,inventario:pgInv,vender:pgVender,pedidos:pgPedidos,caja:pgCaja,finanzas:pgFin,socios:pgSocios,creditos:pgCreditos,'pedidos-proveedor':pgPedidosProv,nomina:pgNomina,cierres:pgCierres,comisiones:pgCom,empaques:pgEmp,ajustes:pgAjustes,'contabilidad-er':pgER,'contabilidad-bg':pgBG,'contabilidad-fe':pgFE};
+  const pages={dashboard:pgDash,tareas:pgTareas,inventario:pgInv,vender:pgVender,pedidos:pgPedidos,caja:pgCaja,finanzas:pgFin,socios:pgSocios,creditos:pgCreditos,'pedidos-proveedor':pgPedidosProv,nomina:pgNomina,cierres:pgCierres,comisiones:pgCom,empaques:pgEmp,ajustes:pgAjustes,'contabilidad-er':pgER,'contabilidad-bg':pgBG,'contabilidad-fe':pgFE};
   return pages[S.page]?pages[S.page]():`<div class="card">Página no encontrada</div>`;
 }
 
@@ -460,6 +462,65 @@ function cajaLive(){
     ${!S.cfg.fecha_saldo?`<div style="margin-top:8px;font-size:11px;color:#f59e0b">⚠ Define tu saldo base en Ajustes</div>`:''}
   </div>`;}
 
+/* TAREAS DIARIAS */
+// Para agregar o quitar tareas, edita esta lista
+const TAREAS=[
+  {id:'wpp',icon:'ti-brand-whatsapp',color:'#25D366',label:'Publicar fotos en WhatsApp',det:'Estados y grupos con los zapatos disponibles'},
+  {id:'ig',icon:'ti-brand-instagram',color:'#E1306C',label:'Historias en Instagram',det:'Subir historias de referencias y tallas'},
+  {id:'contenido',icon:'ti-video',color:'#0C447C',label:'Crear contenido',det:'Fotos o videos nuevos para redes'},
+];
+const LS_T='st_tareas';
+// Se guardan en la tabla "tareas" de Supabase; si aún no existe, solo en este dispositivo
+async function tareasGet(){
+  const r=await dbGet('tareas',`?fecha=eq.${encodeURIComponent(hoy())}&order=id`);
+  if(r){S.tareasOk=true;return r;}
+  S.tareasOk=false;
+  try{return JSON.parse(localStorage.getItem(LS_T)||'[]').filter(x=>x.fecha===hoy());}catch(e){return[];}
+}
+const misTareas=()=>(S.tareas||[]).filter(r=>r.usuario===S.session?.usuario);
+async function togTarea(tid){
+  const me=S.session.usuario;
+  const mine=(S.tareas||[]).find(r=>r.usuario===me&&r.tarea===tid);
+  if(S.tareasOk){
+    if(mine)await dbDel('tareas',`?id=eq.${mine.id}`);
+    else await dbPost('tareas',{fecha:hoy(),usuario:me,tarea:tid,hora:new Date().toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'})});
+    S.tareas=await tareasGet();
+  }else{
+    let all=[];try{all=JSON.parse(localStorage.getItem(LS_T)||'[]').filter(x=>x.fecha===hoy());}catch(e){}
+    if(mine)all=all.filter(r=>!(r.usuario===me&&r.tarea===tid));
+    else all.push({id:Date.now(),fecha:hoy(),usuario:me,tarea:tid,hora:new Date().toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'})});
+    try{localStorage.setItem(LS_T,JSON.stringify(all));}catch(e){}
+    S.tareas=all;
+  }
+  if(!mine&&misTareas().length===TAREAS.length)toast('¡Todas las tareas de hoy listas! 🎉');
+  document.getElementById('mc').innerHTML=renderPage();
+}
+function pgTareas(){
+  const mias=misTareas();const n=mias.length;const pct=Math.round(n/TAREAS.length*100);
+  const equipo=[...new Set(USERS.map(u=>u.usuario))];
+  return`<div class="ph"><h2 class="pt"><i class="ti ti-checklist" style="color:var(--red)"></i> Tareas de hoy</h2><span style="margin-left:auto;font-size:12px;color:#aaa">${hoy()}</span></div>
+  ${S.tareasOk?'':`<div class="card" style="background:#FFF8E1;border-color:#FFE082;font-size:12px;color:#8D6E00">⚠ Las tareas se están guardando solo en este dispositivo. Falta crear la tabla <b>tareas</b> en Supabase para que el equipo las vea.</div>`}
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span style="color:#aaa">Tu avance</span><b>${n} / ${TAREAS.length}</b></div>
+    <div class="pw" style="background:#EEE"><div class="pf" style="width:${pct}%;background:${pct>=100?'#1F5014':'var(--red)'}"></div></div>
+    <div style="margin-top:10px">
+    ${TAREAS.map(t=>{const h=mias.find(r=>r.tarea===t.id);return`
+      <button onclick="togTarea('${t.id}')" style="display:flex;align-items:center;gap:12px;width:100%;padding:14px 10px;border:none;border-bottom:1px solid #F2F2F2;background:${h?'#F3FAEE':'transparent'};cursor:pointer;text-align:left;font-family:inherit;border-radius:8px">
+        <i class="ti ${h?'ti-square-check':'ti-square'}" style="font-size:28px;color:${h?'#1F5014':'#bbb'}"></i>
+        <i class="ti ${t.icon}" style="font-size:22px;color:${t.color}"></i>
+        <span style="flex:1">
+          <span style="display:block;font-weight:600;font-size:14px;color:var(--txt);${h?'text-decoration:line-through;color:#888':''}">${t.label}</span>
+          <span style="display:block;font-size:12px;color:#aaa">${h?'Hecha a las '+h.hora:t.det}</span>
+        </span>
+      </button>`;}).join('')}
+    </div>
+  </div>
+  ${isAdmin()?`<div class="card"><div class="ct">Equipo hoy</div>
+    <table class="tbl"><thead><tr><th>Usuario</th>${TAREAS.map(t=>`<th style="text-align:center"><i class="ti ${t.icon}" style="font-size:16px;color:${t.color}"></i></th>`).join('')}<th>Total</th></tr></thead><tbody>
+    ${equipo.map(u=>{const rs=(S.tareas||[]).filter(r=>r.usuario===u);return`<tr><td style="font-weight:600">${u}</td>${TAREAS.map(t=>{const h=rs.find(r=>r.tarea===t.id);return`<td style="text-align:center">${h?`<span style="color:#1F5014" title="${h.hora}">✓</span>`:'<span style="color:#ddd">—</span>'}</td>`;}).join('')}<td style="font-weight:600;color:${rs.length>=TAREAS.length?'#1F5014':'var(--red)'}">${rs.length}/${TAREAS.length}</td></tr>`;}).join('')}
+    </tbody></table></div>`:''}`;
+}
+
 /* DASHBOARD */
 function pgDash(){
   const{total}=calcSaldos();const gf=tgf();const estado=total-gf-S.cfg.deuda_proveedor;
@@ -467,8 +528,17 @@ function pgDash(){
   const pend=S.pedidos.filter(p=>p.estado==='Pendiente');
   const top={};S.inventario.forEach(i=>{if(!top[i.nombre])top[i.nombre]=0;top[i.nombre]+=i.cant;});
   const tops=Object.entries(top).filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]).slice(0,5);
+  const tHechas=misTareas().length;
   return`<div class="ph"><h2 class="pt">Dashboard</h2></div>
   ${cajaLive()}
+  <div class="card" style="cursor:pointer;display:flex;align-items:center;gap:12px" onclick="goTo('tareas')">
+    <i class="ti ti-checklist" style="font-size:26px;color:${tHechas>=TAREAS.length?'#1F5014':'var(--red)'}"></i>
+    <div style="flex:1">
+      <div style="font-weight:600;font-size:13px">Tareas de hoy · ${tHechas}/${TAREAS.length}</div>
+      <div class="pw" style="background:#EEE"><div class="pf" style="width:${Math.round(tHechas/TAREAS.length*100)}%;background:${tHechas>=TAREAS.length?'#1F5014':'var(--red)'}"></div></div>
+    </div>
+    <i class="ti ti-chevron-right" style="color:#aaa"></i>
+  </div>
   <div class="met">
     <div class="mc2"><div class="ml">Stock</div><div class="mv">${S.inventario.reduce((a,b)=>a+b.cant,0)} uds</div></div>
     <div class="mc2"><div class="ml">Pendientes</div><div class="mv r">${pend.length}</div></div>
