@@ -302,7 +302,7 @@ const invNuevo=()=>S.inventario.filter(r=>r.origen!=='inicial');
 const valInv=(arr)=>arr.reduce((a,b)=>a+(b.cant*(b.pc||0)),0);
 
 async function cargar(p){
-  const full=['dashboard','finanzas','contabilidad-er','contabilidad-bg','contabilidad-fe','socios'];
+  const full=['dashboard','finanzas','socios'];
   if(full.includes(p)){
     const[inv,ven,ped,caj,cfg,com,soc]=await Promise.all([
       dbGet('inventario','?order=talla,nombre'),dbGet('ventas','?order=id.desc'),
@@ -384,9 +384,6 @@ const MORE_PAGES=[
   {id:'caja',icon:'ti-report-money',label:'Caja'},
   {id:'finanzas',icon:'ti-chart-pie',label:'Finanzas'},
   {id:'socios',icon:'ti-users',label:'Socios'},
-  {id:'contabilidad-er',icon:'ti-file-analytics',label:'Est. Resultados'},
-  {id:'contabilidad-bg',icon:'ti-building-bank',label:'Balance General'},
-  {id:'contabilidad-fe',icon:'ti-arrows-exchange',label:'Flujo Efectivo'},
   {id:'creditos',icon:'ti-credit-card',label:'Créditos'},
   {id:'pedidos-proveedor',icon:'ti-truck',label:'Pedidos Proveedor'},
   {id:'nomina',icon:'ti-users',label:'Nómina'},
@@ -399,7 +396,6 @@ function renderApp(){
   const SECTIONS=[
     {label:'OPERACIONES',pages:['dashboard','vender','pedidos','tareas']},
     {label:'GESTIÓN',pages:['inventario','caja','finanzas','socios']},
-    {label:'CONTABILIDAD',pages:['contabilidad-er','contabilidad-bg','contabilidad-fe']},
     {label:'MÁS',pages:['creditos','pedidos-proveedor','nomina','cierres','comisiones','empaques']},
     ...(isAdmin()?[{label:'ADMIN',pages:['ajustes']}]:[]),
   ];
@@ -444,7 +440,7 @@ function toggleMore(){
 }
 
 function renderPage(){
-  const pages={dashboard:pgDash,tareas:pgTareas,inventario:pgInv,vender:pgVender,pedidos:pgPedidos,caja:pgCaja,finanzas:pgFin,socios:pgSocios,creditos:pgCreditos,'pedidos-proveedor':pgPedidosProv,nomina:pgNomina,cierres:pgCierres,comisiones:pgCom,empaques:pgEmp,ajustes:pgAjustes,'contabilidad-er':pgER,'contabilidad-bg':pgBG,'contabilidad-fe':pgFE};
+  const pages={dashboard:pgDash,tareas:pgTareas,inventario:pgInv,vender:pgVender,pedidos:pgPedidos,caja:pgCaja,finanzas:pgFin,socios:pgSocios,creditos:pgCreditos,'pedidos-proveedor':pgPedidosProv,nomina:pgNomina,cierres:pgCierres,comisiones:pgCom,empaques:pgEmp,ajustes:pgAjustes};
   return pages[S.page]?pages[S.page]():`<div class="card">Página no encontrada</div>`;
 }
 
@@ -940,90 +936,6 @@ async function regSocio(){
   toast('Socio registrado ✓');goTo('socios');
 }
 async function delSocio(id){if(!confirm('¿Eliminar?'))return;await dbDel('socios',`?id=eq.${id}`);toast('Eliminado');goTo('socios');}
-
-/* ESTADOS CONTABLES */
-function pgER(){
-  const ingresos=S.ventas.reduce((a,b)=>a+(b.total||0),0);
-  let costo=0;S.ventas.forEach(v=>{const p=S.inventario.find(r=>r.nombre===v.ref&&r.talla===v.talla);costo+=(p?p.pc||0:0)*(v.cant||0);});
-  const utilBruta=ingresos-costo;const gastosOp=S.caja.filter(r=>r.tipo==='Gasto').reduce((a,b)=>a+(b.monto||0),0);const gf=tgf();
-  const utilOp=utilBruta-gastosOp-gf;const utilNeta=utilOp-S.cfg.deuda_proveedor;
-  return`<div class="ph"><h2 class="pt"><i class="ti ti-file-analytics" style="color:var(--red)"></i> Estado de Resultados</h2></div>
-  <div style="max-width:600px">
-  <div class="estado-h">SOUTH TENNIS · ESTADO DE RESULTADOS · ${hoy()}</div>
-  <div class="estado-b">
-    <div class="er sec"><span>Ingresos</span></div>
-    <div class="er"><span>Ventas (${paresV()} pares)</span><span style="color:#1F5014;font-weight:600">${fmt(ingresos)}</span></div>
-    <div class="er sub"><span>Total ingresos</span><span style="color:#1F5014">${fmt(ingresos)}</span></div>
-    <div class="er sec"><span>Costo de ventas</span></div>
-    <div class="er"><span>Costo productos</span><span style="color:var(--red)">(${fmt(costo)})</span></div>
-    <div class="er tot ${utilBruta>=0?'pos':'neg'}"><span>UTILIDAD BRUTA</span><span>${fmt(utilBruta)}</span></div>
-    <div class="er sec"><span>Gastos operativos</span></div>
-    ${S.caja.filter(r=>r.tipo==='Gasto').map(g=>`<div class="er"><span style="color:#888">${g.descripcion}</span><span style="color:var(--red)">(${fmt(g.monto)})</span></div>`).join('')}
-    ${S.cfg.gastos_fijos.map(g=>`<div class="er"><span style="color:#888">${g.nombre} (fijo)</span><span style="color:var(--red)">(${fmt(g.monto)})</span></div>`).join('')}
-    <div class="er sub"><span>Total gastos</span><span style="color:var(--red)">(${fmt(gastosOp+gf)})</span></div>
-    <div class="er tot ${utilOp>=0?'pos':'neg'}"><span>UTILIDAD OPERATIVA</span><span>${fmt(utilOp)}</span></div>
-    <div class="er"><span style="color:#888">Deuda proveedor</span><span style="color:var(--red)">(${fmt(S.cfg.deuda_proveedor)})</span></div>
-    <div class="er tot ${utilNeta>=0?'pos':'neg'}" style="font-size:15px"><span>UTILIDAD NETA</span><span>${fmt(utilNeta)}</span></div>
-    <div class="er"><span style="color:#888">Margen</span><span>${ingresos>0?((utilNeta/ingresos)*100).toFixed(1):0}%</span></div>
-  </div></div>`;}
-
-function pgBG(){
-  const{ef,ban}=calcSaldos();
-  const invIniC=valInv(invInicial());const invNvoC=valInv(invNuevo());const invTC=invIniC+invNvoC;
-  const cxc=S.pedidos.filter(p=>p.estado==='Pendiente').reduce((a,p)=>a+(p.precio-p.abono),0);
-  const totalAct=ef+ban+invTC+cxc;const totalPas=S.cfg.deuda_proveedor||0;const patrim=totalAct-totalPas;
-  return`<div class="ph"><h2 class="pt"><i class="ti ti-building-bank" style="color:var(--red)"></i> Balance General</h2></div>
-  <div class="cols2" style="gap:14px">
-  <div><div class="estado-h">ACTIVOS</div><div class="estado-b">
-    <div class="er sec"><span>Activos corrientes</span></div>
-    <div class="er"><span>Efectivo</span><span style="color:#1F5014;font-weight:600">${fmt(ef)}</span></div>
-    <div class="er"><span>Banco</span><span style="color:#1F5014;font-weight:600">${fmt(ban)}</span></div>
-    <div class="er"><span>Cuentas por cobrar</span><span style="color:#0C447C;font-weight:600">${fmt(cxc)}</span></div>
-    <div class="er sec"><span>Inventario</span></div>
-    <div class="er"><span>Inicial (costo)</span><span style="color:#E65100;font-weight:600">${fmt(invIniC)}</span></div>
-    <div class="er"><span>Nuevo (costo)</span><span style="color:#1B5E20;font-weight:600">${fmt(invNvoC)}</span></div>
-    <div class="er tot pos"><span>TOTAL ACTIVOS</span><span>${fmt(totalAct)}</span></div>
-  </div></div>
-  <div><div class="estado-h">PASIVOS Y PATRIMONIO</div><div class="estado-b">
-    <div class="er sec"><span>Pasivos</span></div>
-    <div class="er"><span>Deuda proveedor</span><span style="color:var(--red);font-weight:600">${fmt(totalPas)}</span></div>
-    <div class="er sub"><span>Total pasivos</span><span style="color:var(--red)">${fmt(totalPas)}</span></div>
-    <div class="er sec"><span>Patrimonio</span></div>
-    <div class="er"><span>Capital inventario inicial</span><span style="color:#E65100;font-weight:600">${fmt(invIniC)}</span></div>
-    ${S.socios.map(s=>`<div class="er"><span>${s.nombre}</span><span style="color:#0C447C;font-weight:600">${fmt((s.aporte_efectivo||0)+(s.aporte_inventario||0))}</span></div>`).join('')}
-    <div class="er"><span style="color:#888">Utilidad período</span><span style="color:${patrim-invIniC-capitalSocios()>=0?'#1F5014':'var(--red)'};">${fmt(patrim-invIniC-capitalSocios())}</span></div>
-    <div class="er sub"><span>Total patrimonio</span><span>${fmt(patrim)}</span></div>
-    <div class="er tot ${patrim>=0?'pos':'neg'}" style="font-size:15px"><span>TOTAL PAS+PATRIM</span><span>${fmt(totalPas+patrim)}</span></div>
-  </div>
-  <div style="margin-top:10px;padding:10px 14px;background:${Math.abs(totalAct-(totalPas+patrim))<1?'#EAF5E3':'#FDECEA'};border-radius:8px;font-size:12px;font-weight:600;color:${Math.abs(totalAct-(totalPas+patrim))<1?'#1F5014':'var(--red)'}">
-    ${Math.abs(totalAct-(totalPas+patrim))<1?'✓ Balance cuadrado':'⚠ Diferencia: '+fmt(Math.abs(totalAct-(totalPas+patrim)))}
-  </div></div></div>`;}
-
-function pgFE(){
-  const{ef,ban}=calcSaldos();const saldoIni=(S.cfg.saldo_efectivo||0)+(S.cfg.saldo_banco||0);
-  const ventasEf=S.caja.filter(r=>r.tipo==='Venta'&&r.forma_pago==='Efectivo').reduce((a,b)=>a+(b.monto||0),0);
-  const ventasBan=S.caja.filter(r=>r.tipo==='Venta'&&r.forma_pago!=='Efectivo').reduce((a,b)=>a+(b.monto||0),0);
-  const cobros=S.caja.filter(r=>r.tipo==='Cobro Pedido'||r.tipo==='Abono Pedido').reduce((a,b)=>a+(b.monto||0),0);
-  const aportes=S.caja.filter(r=>r.tipo==='Aporte Capital').reduce((a,b)=>a+(b.monto||0),0);
-  const gastos=S.caja.filter(r=>r.tipo==='Gasto').reduce((a,b)=>a+(b.monto||0),0);
-  const flujo=ventasEf+ventasBan+cobros+aportes-gastos;
-  return`<div class="ph"><h2 class="pt"><i class="ti ti-arrows-exchange" style="color:var(--red)"></i> Flujo de Efectivo</h2></div>
-  <div style="max-width:600px">
-  <div class="estado-h">SOUTH TENNIS · FLUJO DE EFECTIVO · ${hoy()}</div>
-  <div class="estado-b">
-    <div class="er tot"><span>SALDO INICIAL</span><span>${fmt(saldoIni)}</span></div>
-    <div class="er sec"><span>Entradas</span></div>
-    <div class="er"><span>Ventas efectivo</span><span style="color:#1F5014">+${fmt(ventasEf)}</span></div>
-    <div class="er"><span>Ventas banco</span><span style="color:#1F5014">+${fmt(ventasBan)}</span></div>
-    <div class="er"><span>Cobros pedidos</span><span style="color:#1F5014">+${fmt(cobros)}</span></div>
-    <div class="er"><span>Aportes socios</span><span style="color:#0C447C">+${fmt(aportes)}</span></div>
-    <div class="er sub"><span>Total entradas</span><span style="color:#1F5014">${fmt(ventasEf+ventasBan+cobros+aportes)}</span></div>
-    <div class="er sec"><span>Salidas</span></div>
-    ${S.caja.filter(r=>r.tipo==='Gasto').map(g=>`<div class="er"><span style="color:#888">${g.descripcion}</span><span style="color:var(--red)">−${fmt(g.monto)}</span></div>`).join('')||'<div class="er"><span style="color:#bbb">Sin gastos</span><span>$0</span></div>'}
-    <div class="er sub"><span>Total salidas</span><span style="color:var(--red)">−${fmt(gastos)}</span></div>
-    <div class="er tot ${flujo>=0?'pos':'neg'}"><span>FLUJO NETO</span><span>${flujo>=0?'+':''}${fmt(flujo)}</span></div>
-    <div class="er tot" style="background:#1A1A1A;color:#fff;font-size:15px"><span>SALDO FINAL</span><span style="color:${ef+ban>=0?'#4CAF50':'#f44336'}">${fmt(ef+ban)}</span></div>
-  </div></div>`;}
 
 /* COMISIONES */
 function pgCom(){const tot={};S.comisiones.forEach(c=>{if(!tot[c.vendedor])tot[c.vendedor]=0;tot[c.vendedor]+=c.bono;});
