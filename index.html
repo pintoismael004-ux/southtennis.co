@@ -318,7 +318,7 @@ async function cargar(p){
   else if(p==='vender'){S.inventario=await dbGet('inventario','?cant=gt.0&order=talla,nombre')||[];S.vTalla=null;S.vProd=null;}
   else if(p==='pedidos')S.pedidos=await dbGet('pedidos','?order=id.desc')||[];
   else if(p==='caja'){S.caja=await dbGet('caja','?order=id.desc')||[];const c=await dbGet('config','?limit=1');if(c&&c[0])S.cfg={...S.cfg,...c[0]};}
-  else if(p==='creditos'){S.creditos=await dbGet('creditos','?order=id.desc')||[];}
+  else if(p==='creditos'){const[cr,inv]=await Promise.all([dbGet('creditos','?order=id.desc'),dbGet('inventario','?cant=gt.0&order=nombre,talla')]);S.creditos=cr||[];S.inventario=inv||[];}
   else if(p==='nomina'){S.nomina=await dbGet('nomina','?order=id.desc')||[];S.comisiones=await dbGet('comisiones','?order=id.desc')||[];}
   else if(p==='cierres'){S.cierres=await dbGet('cierres_mes','?order=id.desc')||[];}
   else if(p==='pedidos-proveedor'){S.pedidosProv=await dbGet('pedidos_proveedor','?order=id.desc')||[];S.inventario=await dbGet('inventario','?order=talla,nombre')||[];S.stockMin=await dbGet('stock_minimo','?order=ref')||[];}
@@ -1085,9 +1085,11 @@ function pgCreditos(){
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px">
       <div class="frow"><label>Cliente</label><input id="cr-cli" placeholder="Nombre"/></div>
       <div class="frow"><label>Teléfono</label><input id="cr-tel" placeholder="3XX..."/></div>
-      <div class="frow"><label>Referencia</label><input id="cr-ref" placeholder="Ej: SAMBA"/></div>
-      <div class="frow"><label>Talla</label><input id="cr-tall" type="number" value="40"/></div>
-      <div class="frow"><label>Cantidad</label><input id="cr-cant" type="number" value="1" oninput="crCalc()"/></div>
+      <div class="frow" style="grid-column:1/-1"><label>Zapato (del inventario)</label><select id="cr-prod" onchange="crSel()">
+        <option value="">— Elige referencia y talla —</option>
+        ${S.inventario.filter(r=>r.cant>0).map(r=>`<option value="${r.id}">${esc(r.nombre)} · T${r.talla} · ${r.cant} uds · ${fmt(r.precio)}</option>`).join('')}
+      </select></div>
+      <div class="frow"><label>Cantidad</label><input id="cr-cant" type="number" value="1" min="1" oninput="crSel()"/></div>
       <div class="frow"><label>Precio total</label><input id="cr-prec" type="number" value="165000" oninput="crCalc()"/></div>
       <div class="frow"><label>Abono inicial</label><input id="cr-abon" type="number" value="0" oninput="crCalc()"/></div>
       <div class="frow"><label>Nº cuotas</label><input id="cr-cuotas" type="number" value="1" min="1" oninput="crCalc()"/></div>
@@ -1127,6 +1129,13 @@ function pgCreditos(){
   ${isAdmin()?`<td><button class="btn btn-sm" onclick="delCredito(${c.id})" style="color:var(--red);border-color:#F5BABA;padding:4px 7px"><i class="ti ti-trash"></i></button></td>`:''}</tr>`).join('')}
   </tbody></table></div>`:''}`;
 }
+// Al elegir zapato o cambiar cantidad, propone el precio según el inventario
+function crSel(){
+  const p=S.inventario.find(r=>r.id===parseInt(document.getElementById('cr-prod')?.value));
+  const cant=parseInt(document.getElementById('cr-cant')?.value)||1;
+  if(p){const el=document.getElementById('cr-prec');if(el)el.value=(p.precio||0)*cant;}
+  crCalc();
+}
 function crCalc(){
   const prec=parseInt(document.getElementById('cr-prec')?.value)||0;
   const abon=parseInt(document.getElementById('cr-abon')?.value)||0;
@@ -1139,19 +1148,26 @@ function crCalc(){
 async function regCredito(){
   const cli=document.getElementById('cr-cli').value.trim();
   const tel=document.getElementById('cr-tel').value.trim();
-  const ref=document.getElementById('cr-ref').value.trim().toUpperCase();
-  const talla=parseInt(document.getElementById('cr-tall').value)||0;
+  const prod=S.inventario.find(r=>r.id===parseInt(document.getElementById('cr-prod').value));
   const cant=parseInt(document.getElementById('cr-cant').value)||1;
   const precio=parseInt(document.getElementById('cr-prec').value)||0;
   const abono=parseInt(document.getElementById('cr-abon').value)||0;
   const cuotas=parseInt(document.getElementById('cr-cuotas').value)||1;
   const pago=document.getElementById('cr-pago').value;
   const notas=document.getElementById('cr-notas').value.trim();
-  if(!cli||!ref){toast('Completa cliente y referencia',false);return;}
+  if(!cli){toast('Ingresa el cliente',false);return;}
+  if(!prod){toast('Elige el zapato del inventario',false);return;}
+  const ref=prod.nombre,talla=prod.talla;
+  // Verifica el stock real antes de descontar (otro vendedor pudo venderlo)
+  const act=await dbGet('inventario',`?id=eq.${prod.id}`);
+  const stock=act&&act[0]?act[0].cant:0;
+  if(stock<cant){toast(`Stock insuficiente: quedan ${stock} de ${ref} T${talla}`,false);goTo('creditos');return;}
   const saldo=Math.max(0,precio-abono);
   const vcuota=Math.ceil(saldo/cuotas);
   if(abono>0&&!await pedirComp({tipo:'Cobro Crédito',desc:`Abono inicial ${cli} — ${ref}`,monto:abono,pago}))return;
-  await dbPost('creditos',{fecha:hoy(),vendedor:S.session.usuario,cliente:cli,telefono:tel,ref,talla,cant,precio_total:precio,abono_inicial:abono,saldo,num_cuotas:cuotas,valor_cuota:vcuota,cuotas_pagadas:0,forma_pago:pago,notas,estado:'Pendiente'});
+  const res=await dbPost('creditos',{fecha:hoy(),vendedor:S.session.usuario,cliente:cli,telefono:tel,ref,talla,cant,precio_total:precio,abono_inicial:abono,saldo,num_cuotas:cuotas,valor_cuota:vcuota,cuotas_pagadas:0,forma_pago:pago,notas,estado:'Pendiente'});
+  if(!res){toast('No se pudo guardar el crédito',false);return;}
+  await dbPatch('inventario',{cant:stock-cant},`?id=eq.${prod.id}`);
   if(abono>0)await dbPost('caja',{fecha:hoy(),tipo:'Cobro Crédito',descripcion:`Abono inicial ${cli} — ${ref}`,monto:abono,forma_pago:pago});
   toast('Crédito registrado ✓');goTo('creditos');
 }
@@ -1183,7 +1199,17 @@ async function abonarCreditoLibre(id,saldoAct){
   toast('Abono registrado ✓');goTo('creditos');
 }
 async function cerrarCredito(id){if(!confirm('¿Marcar como pagado?'))return;await dbPatch('creditos',{saldo:0,estado:'Pagado'},`?id=eq.${id}`);toast('Cerrado ✓');goTo('creditos');}
-async function delCredito(id){if(!confirm('¿Eliminar?'))return;await dbDel('creditos',`?id=eq.${id}`);toast('Eliminado');goTo('creditos');}
+async function delCredito(id){
+  const c=(S.creditos||[]).find(x=>x.id===id);if(!c)return;
+  if(!confirm(`¿Eliminar el crédito de ${c.cliente}?`))return;
+  // Los créditos anteriores a este cambio no descontaron stock: por eso se pregunta
+  if(confirm(`¿Devolver ${c.cant||1} ud(s) de ${c.ref} T${c.talla} al inventario?\n\nAcepta solo si el zapato regresó a la tienda.`)){
+    const rows=await dbGet('inventario',`?nombre=eq.${encodeURIComponent(c.ref)}&talla=eq.${c.talla}`);
+    if(rows&&rows[0])await dbPatch('inventario',{cant:rows[0].cant+(c.cant||1)},`?id=eq.${rows[0].id}`);
+    else toast(`${c.ref} T${c.talla} no está en inventario; agrégalo a mano`,false);
+  }
+  await dbDel('creditos',`?id=eq.${id}`);toast('Eliminado');goTo('creditos');
+}
 
 /* ══ PEDIDOS PROVEEDOR ══ */
 function pgPedidosProv(){
