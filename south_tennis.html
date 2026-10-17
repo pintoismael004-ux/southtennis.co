@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>South Tennis</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css">
 <style>
@@ -10,7 +10,7 @@
 :root{--red:#C8201A;--red-d:#9B1512;--bg:#F5F4F2;--surface:#fff;--surface2:#F8F8F8;--border:#E8E8E8;--txt:#1A1A1A;--txt2:#666;--sidebar-w:200px}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;color:var(--txt);background:var(--bg)}
 /* LAYOUT */
-.app{display:flex;flex-direction:column;height:100vh;overflow:hidden}
+.app{display:flex;flex-direction:column;height:100vh;height:100dvh;overflow:hidden}
 .topbar{display:flex;align-items:center;gap:10px;padding:0 1rem;height:52px;background:#111;flex-shrink:0}
 .body{display:flex;flex:1;overflow:hidden}
 /* SIDEBAR — desktop */
@@ -113,12 +113,35 @@ input:focus,select:focus{outline:none;border-color:var(--red)}
 .inv-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:.85rem;margin-bottom:.6rem}
 .ph{display:flex;align-items:center;gap:10px;margin-bottom:1rem;flex-wrap:wrap}
 .pt{font-size:19px;font-weight:600}
+.cols2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cols-v{display:grid;grid-template-columns:1.2fr .8fr;gap:14px}
+.cols-min{display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;margin-bottom:.75rem;align-items:flex-end}
+/* COMPROBANTE */
+.comp-box{border:2px dashed #B5D4F4;background:#F3F8FD;border-radius:10px;padding:.85rem;margin-bottom:.75rem}
+.comp-prev{max-width:100%;max-height:260px;border-radius:8px;display:block;margin:8px auto 0;border:1px solid var(--border)}
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10000;display:flex;align-items:center;justify-content:center;padding:1rem}
+.modal{background:#fff;border-radius:14px;padding:1.25rem;width:100%;max-width:420px;max-height:90vh;overflow-y:auto}
+.btn-wa{background:#25D366;border-color:#25D366;color:#fff}
+.btn-wa:disabled{opacity:.5;cursor:not-allowed}
 @media(max-width:700px){
   .met{grid-template-columns:repeat(2,minmax(0,1fr))}
   .zg{grid-template-columns:repeat(2,minmax(0,1fr))}
   .grid2{grid-template-columns:1fr 1fr}
   .ph{margin-bottom:.75rem}
   .pt{font-size:17px}
+  .cols2,.cols-v,.cols-min{grid-template-columns:1fr}
+  /* 16px evita que el iPhone haga zoom al escribir */
+  input,select,textarea{font-size:16px}
+  /* tablas anchas: scroll horizontal en vez de desbordar la pantalla */
+  .tbl{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch;white-space:nowrap}
+  .caja-live{padding:.9rem}
+  .clg{gap:6px}
+  .cli{padding:.5rem .25rem}
+  .clv{font-size:13px}
+  .topbar{padding:0 .6rem;gap:6px}
+  .topbar .tb-user{display:none}
+  .bottom-nav{padding-bottom:env(safe-area-inset-bottom)}
+  .tst{white-space:normal!important;max-width:90vw;text-align:center}
 }
 </style>
 </head>
@@ -164,6 +187,91 @@ function toast(msg,ok=true){
   const bottom=isMobile()?'70px':'20px';
   d.style.cssText=`position:fixed;bottom:${bottom};left:50%;transform:translateX(-50%);z-index:9999;padding:10px 20px;border-radius:20px;font-size:13px;font-weight:600;white-space:nowrap;${ok?'background:#1F5014;color:#fff':'background:#9B1512;color:#fff'}`;
   d.textContent=(ok?'✓ ':'⚠ ')+msg;document.body.appendChild(d);setTimeout(()=>d.remove(),3000);
+}
+
+/* COMPROBANTES DE TRANSFERENCIA */
+// Número de WhatsApp que recibe los comprobantes (código de país + número, sin + ni espacios)
+const WA_NUM='573242729986';
+const esTransf=p=>!!p&&p!=='Efectivo';
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function compTexto(m){
+  const hora=new Date().toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'});
+  return`🧾 SOUTH TENNIS — Comprobante\nTipo: ${m.tipo}\nDetalle: ${m.desc}\nMonto: ${fmt(m.monto)}\nPago: ${m.pago}\nFecha: ${hoy()} ${hora}\nRegistró: ${S.session?.usuario||''}`;
+}
+// Reduce la foto y le pone una franja con los datos del movimiento, para cuadrar contra el banco
+async function sellarComp(file,m){
+  try{
+    const url=URL.createObjectURL(file);
+    const img=await new Promise((ok,ko)=>{const i=new Image();i.onload=()=>ok(i);i.onerror=ko;i.src=url;});
+    const sc=Math.min(1,1600/Math.max(img.width,img.height));
+    const w=Math.round(img.width*sc),h=Math.round(img.height*sc);
+    const fs=Math.max(16,Math.round(w/30));
+    const lines=compTexto(m).split('\n').slice(1);
+    const band=Math.round(fs*1.45*lines.length+fs);
+    const cv=document.createElement('canvas');cv.width=w;cv.height=h+band;
+    const cx=cv.getContext('2d');
+    cx.fillStyle='#fff';cx.fillRect(0,0,w,h);cx.drawImage(img,0,0,w,h);
+    cx.fillStyle='#111';cx.fillRect(0,h,w,band);
+    cx.fillStyle='#fff';cx.font=`600 ${fs}px sans-serif`;cx.textBaseline='top';
+    lines.forEach((l,i)=>cx.fillText(l,fs*.6,h+fs*.5+i*fs*1.45,w-fs*1.2));
+    URL.revokeObjectURL(url);
+    const blob=await new Promise(r=>cv.toBlob(r,'image/jpeg',.85));
+    if(!blob)return file;
+    return new File([blob],`comprobante_${Date.now()}.jpg`,{type:'image/jpeg'});
+  }catch(e){console.warn('No se pudo procesar la foto',e);return file;}
+}
+// En computador: descarga la imagen y abre WhatsApp Web con el texto
+function enviarWAFallback(file,texto){
+  const a=document.createElement('a');a.href=URL.createObjectURL(file);a.download=file.name;document.body.appendChild(a);a.click();a.remove();
+  window.open(`https://wa.me/${WA_NUM}?text=${encodeURIComponent(texto+'\n\n(Adjunta la imagen descargada)')}`,'_blank');
+}
+// Exige la foto del comprobante cuando el pago no es en efectivo y la envía por WhatsApp.
+// Devuelve true si se puede guardar el movimiento, false si el usuario canceló.
+function pedirComp(m){
+  if(!esTransf(m.pago))return Promise.resolve(true);
+  return new Promise(res=>{
+    let file=null;
+    const bg=document.createElement('div');bg.className='modal-bg';
+    bg.innerHTML=`<div class="modal">
+      <div style="font-size:16px;font-weight:600;margin-bottom:4px"><i class="ti ti-receipt" style="color:#0C447C"></i> Comprobante obligatorio</div>
+      <div style="font-size:12px;color:#888;margin-bottom:12px">Pago por <b>${esc(m.pago)}</b>. Toma o sube la foto del comprobante y envíala por WhatsApp al <b>+57 324 272 9986</b> antes de guardar.</div>
+      <div style="background:#F8F8F8;border-radius:8px;padding:10px;font-size:13px;margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;gap:8px"><span style="color:#aaa">${esc(m.tipo)}</span><b>${fmt(m.monto)}</b></div>
+        <div style="color:#666;margin-top:3px">${esc(m.desc)}</div>
+      </div>
+      <div class="comp-box">
+        <label class="btn btn-b btn-full" style="cursor:pointer"><i class="ti ti-camera"></i> Tomar / elegir foto
+          <input type="file" accept="image/*" id="comp-in" style="display:none"></label>
+        <div id="comp-st" style="font-size:12px;color:#888;text-align:center;margin-top:6px">Sin foto</div>
+        <img id="comp-prev" class="comp-prev" style="display:none" alt="Comprobante">
+      </div>
+      <button class="btn btn-wa btn-full" id="comp-send" disabled><i class="ti ti-brand-whatsapp"></i> Enviar por WhatsApp y guardar</button>
+      <button class="btn btn-full" id="comp-cancel" style="margin-top:8px">Cancelar</button>
+    </div>`;
+    document.body.appendChild(bg);
+    const $=id=>bg.querySelector('#'+id);
+    const cerrar=ok=>{bg.remove();res(ok);};
+    $('comp-cancel').onclick=()=>cerrar(false);
+    $('comp-in').onchange=async e=>{
+      const f=e.target.files&&e.target.files[0];if(!f)return;
+      $('comp-st').textContent='Procesando foto...';$('comp-send').disabled=true;
+      file=await sellarComp(f,m);
+      const p=$('comp-prev');p.src=URL.createObjectURL(file);p.style.display='block';
+      $('comp-st').textContent='✓ Foto lista';$('comp-send').disabled=false;
+    };
+    $('comp-send').onclick=async()=>{
+      if(!file){toast('Falta la foto del comprobante',false);return;}
+      const texto=compTexto(m);
+      if(navigator.canShare&&navigator.canShare({files:[file]})){
+        try{await navigator.share({files:[file],text:texto});}
+        catch(err){
+          if(err.name==='AbortError'){toast('No se envió el comprobante. Intenta de nuevo',false);return;}
+          enviarWAFallback(file,texto);
+        }
+      }else enviarWAFallback(file,texto);
+      cerrar(true);
+    };
+  });
 }
 
 function parseFecha(f){
@@ -270,7 +378,7 @@ const MAIN_PAGES=[
   {id:'dashboard',icon:'ti-dashboard',label:'Inicio'},
   {id:'vender',icon:'ti-shopping-cart',label:'Vender'},
   {id:'pedidos',icon:'ti-package',label:'Pedidos'},
-  {id:'inventario',icon:'ti-layers',label:'Inventario'},
+  {id:'inventario',icon:'ti-stack-2',label:'Inventario'},
 ];
 const MORE_PAGES=[
   {id:'caja',icon:'ti-report-money',label:'Caja'},
@@ -311,7 +419,7 @@ function renderApp(){
   <div class="topbar">
     <img src="data:image/png;base64,${LOGO_B64}" style="height:36px;object-fit:contain">
     <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
-      <span style="font-size:12px;color:#888">${S.session.usuario}</span>
+      <span class="tb-user" style="font-size:12px;color:#888">${S.session.usuario}</span>
       <span class="badge ${isAdmin()?'ba':'bv'}">${S.session.permiso}</span>
       <button class="btn btn-sm" onclick="goTo(S.page)" style="background:transparent;border-color:#444;color:#888;min-height:30px"><i class="ti ti-refresh"></i></button>
       <button class="btn btn-sm" onclick="doLogout()" style="background:transparent;border-color:#444;color:#888;min-height:30px"><i class="ti ti-logout"></i></button>
@@ -369,7 +477,7 @@ function pgDash(){
     <div class="mc2"><div class="ml">Capital socios</div><div class="mv b" style="font-size:14px">${fmt(capitalSocios())}</div></div>
     <div class="mc2"><div class="ml">Meta ${pct}%</div><div class="mv ${pct>=100?'g':'r'}">${pv}/${meta}</div></div>
   </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+  <div class="cols2">
   <div class="card"><div class="ct">Top referencias</div>
     ${tops.length?`<table class="tbl"><thead><tr><th>Ref</th><th>Uds</th></tr></thead><tbody>${tops.map(([n,v])=>`<tr><td style="font-weight:600">${n}</td><td>${v}</td></tr>`).join('')}</tbody></table>`:'<span style="color:#bbb;font-size:13px">Sin stock</span>'}
   </div>
@@ -392,7 +500,7 @@ function pgVender(){
   const tSel=S.vTalla;const pSel=S.vProd;
   const prodsTalla=tSel?S.inventario.filter(r=>r.talla===tSel):[];
   return`<div class="ph"><h2 class="pt"><i class="ti ti-shopping-cart" style="color:var(--red)"></i> Nueva venta</h2></div>
-  <div style="display:grid;grid-template-columns:1.2fr .8fr;gap:14px">
+  <div class="cols-v">
   <div>
     <div class="card"><div class="ct">Paso 1 — Selecciona la talla</div>
       <div class="tb-wrap">${tallas.length?tallas.map(t=>`<button class="tb ${tSel===t?'ac':''}" onclick="selTalla(${t})">T${t}</button>`).join(''):'<span style="color:#bbb;font-size:13px">Sin stock</span>'}</div>
@@ -448,6 +556,7 @@ async function regVenta(){
   const dom=parseInt(document.getElementById('v-dom')?.value)||0;
   if(pSel.cant<cant){toast('Stock insuficiente',false);return;}
   const sub=pu*cant;const total=sub+dom;
+  if(!await pedirComp({tipo:'Venta',desc:`${cliente} — ${pSel.nombre} T${talla} x${cant}`,monto:total,pago}))return;
   const btn=document.getElementById('btn-venta');if(btn){btn.disabled=true;btn.textContent='Guardando...';}
   await Promise.all([
     dbPatch('inventario',{cant:pSel.cant-cant},`?id=eq.${pSel.id}`),
@@ -599,12 +708,13 @@ async function regPedido(){
   const precio=parseInt(document.getElementById('p-prec').value)||0;const abono=parseInt(document.getElementById('p-abon').value)||0;
   const llegada=document.getElementById('p-lleg').value;const pago=document.getElementById('p-pago').value;
   if(!cli||!ref){toast('Completa cliente y referencia',false);return;}
+  if(abono>0&&!await pedirComp({tipo:'Abono Pedido',desc:`${cli} — ${ref} T${talla}`,monto:abono,pago}))return;
   await dbPost('pedidos',{fecha:hoy(),vendedor:S.session.usuario,cliente:cli,telefono:tel,referencia:ref,talla,precio,abono,llegada:llegada||'Por confirmar',forma_pago:pago,estado:'Pendiente'});
   if(abono>0)await dbPost('caja',{fecha:hoy(),tipo:'Abono Pedido',descripcion:`${cli} — ${ref}`,monto:abono,forma_pago:pago});
   toast('Pedido guardado ✓');goTo('pedidos');
 }
-async function completarP(id){const p=S.pedidos.find(x=>x.id===id);if(!p)return;const s=p.precio-p.abono;if(s>0&&confirm(`Cobrar saldo ${fmt(s)}?`))await dbPost('caja',{fecha:hoy(),tipo:'Cobro Pedido',descripcion:`Saldo ${p.cliente}`,monto:s,forma_pago:p.forma_pago});await dbPatch('pedidos',{estado:'Completado'},`?id=eq.${id}`);toast('Completado');goTo('pedidos');}
-async function abonarP(id){const p=S.pedidos.find(x=>x.id===id);if(!p)return;const monto=parseInt(prompt(`Abonar a ${p.cliente}\nSaldo: ${fmt(p.precio-p.abono)}`));if(!monto||monto<=0)return;await Promise.all([dbPatch('pedidos',{abono:Math.min(p.abono+monto,p.precio)},`?id=eq.${id}`),dbPost('caja',{fecha:hoy(),tipo:'Abono Pedido',descripcion:`Abono ${p.cliente}`,monto,forma_pago:p.forma_pago})]);toast('Abono guardado');goTo('pedidos');}
+async function completarP(id){const p=S.pedidos.find(x=>x.id===id);if(!p)return;const s=p.precio-p.abono;if(s>0&&confirm(`Cobrar saldo ${fmt(s)}?`)){if(!await pedirComp({tipo:'Cobro Pedido',desc:`Saldo ${p.cliente} — ${p.referencia}`,monto:s,pago:p.forma_pago}))return;await dbPost('caja',{fecha:hoy(),tipo:'Cobro Pedido',descripcion:`Saldo ${p.cliente}`,monto:s,forma_pago:p.forma_pago});}await dbPatch('pedidos',{estado:'Completado'},`?id=eq.${id}`);toast('Completado');goTo('pedidos');}
+async function abonarP(id){const p=S.pedidos.find(x=>x.id===id);if(!p)return;const monto=parseInt(prompt(`Abonar a ${p.cliente}\nSaldo: ${fmt(p.precio-p.abono)}`));if(!monto||monto<=0)return;if(!await pedirComp({tipo:'Abono Pedido',desc:`Abono ${p.cliente} — ${p.referencia}`,monto,pago:p.forma_pago}))return;await Promise.all([dbPatch('pedidos',{abono:Math.min(p.abono+monto,p.precio)},`?id=eq.${id}`),dbPost('caja',{fecha:hoy(),tipo:'Abono Pedido',descripcion:`Abono ${p.cliente}`,monto,forma_pago:p.forma_pago})]);toast('Abono guardado');goTo('pedidos');}
 async function eliminarP(id){if(!confirm('¿Eliminar?'))return;await dbDel('pedidos',`?id=eq.${id}`);toast('Eliminado');goTo('pedidos');}
 
 /* CAJA */
@@ -637,7 +747,7 @@ function pgCaja(){
   </tr>`).join('')}
   </tbody></table></div>`}`;
 }
-async function regMov(){const tipo=document.getElementById('c-tipo').value;const desc=document.getElementById('c-desc').value.trim()||'Sin descripción';const monto=parseInt(document.getElementById('c-mont').value)||0;const pago=document.getElementById('c-pago').value;if(monto<=0){toast('Monto inválido',false);return;}await dbPost('caja',{fecha:hoy(),tipo,descripcion:desc,monto,forma_pago:pago});toast('Guardado ✓');goTo('caja');}
+async function regMov(){const tipo=document.getElementById('c-tipo').value;const desc=document.getElementById('c-desc').value.trim()||'Sin descripción';const monto=parseInt(document.getElementById('c-mont').value)||0;const pago=document.getElementById('c-pago').value;if(monto<=0){toast('Monto inválido',false);return;}if(!await pedirComp({tipo,desc,monto,pago}))return;await dbPost('caja',{fecha:hoy(),tipo,descripcion:desc,monto,forma_pago:pago});toast('Guardado ✓');goTo('caja');}
 async function delMov(id){if(!confirm('¿Eliminar?'))return;await dbDel('caja',`?id=eq.${id}`);toast('Eliminado');goTo('caja');}
 
 /* FINANZAS */
@@ -655,7 +765,7 @@ function pgFin(){
     <div class="mc2"><div class="ml">Gastos fijos</div><div class="mv r">${fmt(gf)}</div></div>
     <div class="mc2"><div class="ml">Capital socios</div><div class="mv b">${fmt(capitalSocios())}</div></div>
   </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+  <div class="cols2">
   <div class="card"><div class="ct" style="display:flex;justify-content:space-between;align-items:center">Gastos fijos ${isAdmin()?`<button class="btn btn-g btn-sm" onclick="showAddGasto()"><i class="ti ti-plus"></i></button>`:''}</div>
   <div id="add-gasto-form"></div>
   ${S.cfg.gastos_fijos.length===0?`<div style="color:#bbb;font-size:13px">Sin gastos fijos</div>`:
@@ -754,6 +864,7 @@ async function regSocio(){
   const ef=parseInt(document.getElementById('s-ef').value)||0;const inv=parseInt(document.getElementById('s-inv').value)||0;
   const notas=document.getElementById('s-notas').value.trim();
   if(!nom){toast('Ingresa el nombre',false);return;}
+  if(ef>0&&!await pedirComp({tipo:'Aporte Capital',desc:`Aporte de ${nom}`,monto:ef,pago:'Transferencia'}))return;
   await dbPost('socios',{nombre:nom,fecha_ingreso:fecha,aporte_efectivo:ef,aporte_inventario:inv,notas});
   if(ef>0)await dbPost('caja',{fecha:hoy(),tipo:'Aporte Capital',descripcion:`Aporte de ${nom}`,monto:ef,forma_pago:'Transferencia'});
   const cs=[...(S.cfg.capital_social||[]),{nombre:nom,fecha,efectivo:ef,inventario:inv}];
@@ -794,7 +905,7 @@ function pgBG(){
   const cxc=S.pedidos.filter(p=>p.estado==='Pendiente').reduce((a,p)=>a+(p.precio-p.abono),0);
   const totalAct=ef+ban+invTC+cxc;const totalPas=S.cfg.deuda_proveedor||0;const patrim=totalAct-totalPas;
   return`<div class="ph"><h2 class="pt"><i class="ti ti-building-bank" style="color:var(--red)"></i> Balance General</h2></div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+  <div class="cols2" style="gap:14px">
   <div><div class="estado-h">ACTIVOS</div><div class="estado-b">
     <div class="er sec"><span>Activos corrientes</span></div>
     <div class="er"><span>Efectivo</span><span style="color:#1F5014;font-weight:600">${fmt(ef)}</span></div>
@@ -1039,6 +1150,7 @@ async function regCredito(){
   if(!cli||!ref){toast('Completa cliente y referencia',false);return;}
   const saldo=Math.max(0,precio-abono);
   const vcuota=Math.ceil(saldo/cuotas);
+  if(abono>0&&!await pedirComp({tipo:'Cobro Crédito',desc:`Abono inicial ${cli} — ${ref}`,monto:abono,pago}))return;
   await dbPost('creditos',{fecha:hoy(),vendedor:S.session.usuario,cliente:cli,telefono:tel,ref,talla,cant,precio_total:precio,abono_inicial:abono,saldo,num_cuotas:cuotas,valor_cuota:vcuota,cuotas_pagadas:0,forma_pago:pago,notas,estado:'Pendiente'});
   if(abono>0)await dbPost('caja',{fecha:hoy(),tipo:'Cobro Crédito',descripcion:`Abono inicial ${cli} — ${ref}`,monto:abono,forma_pago:pago});
   toast('Crédito registrado ✓');goTo('creditos');
@@ -1047,6 +1159,7 @@ async function abonarCredito(id,saldoAct,vcuota){
   const c=(S.creditos||[]).find(x=>x.id===id);if(!c)return;
   const monto=Math.min(vcuota,saldoAct);
   if(!confirm(`Registrar cuota de ${fmt(monto)}?\nSaldo restante: ${fmt(saldoAct-monto)}`))return;
+  if(!await pedirComp({tipo:'Cobro Crédito',desc:`Cuota — ${c.cliente} ${c.ref}`,monto,pago:c.forma_pago}))return;
   const nuevoSaldo=Math.max(0,saldoAct-monto);
   const cpagadas=(c.cuotas_pagadas||0)+1;
   const estado=nuevoSaldo<=0?'Pagado':'Pendiente';
@@ -1060,6 +1173,7 @@ async function abonarCreditoLibre(id,saldoAct){
   const c=(S.creditos||[]).find(x=>x.id===id);if(!c)return;
   const monto=parseInt(prompt(`Abono libre a ${c.cliente}\nSaldo: ${fmt(saldoAct)}\nIngresa el monto:`));
   if(!monto||monto<=0)return;
+  if(!await pedirComp({tipo:'Cobro Crédito',desc:`Abono libre — ${c.cliente} ${c.ref}`,monto:Math.min(monto,saldoAct),pago:c.forma_pago}))return;
   const nuevoSaldo=Math.max(0,saldoAct-monto);
   const estado=nuevoSaldo<=0?'Pagado':'Pendiente';
   await Promise.all([
@@ -1154,6 +1268,7 @@ async function regPedidoProv(){
 async function recibirPedidoProv(id){
   const p=(S.pedidosProv||[]).find(x=>x.id===id);if(!p)return;
   if(!confirm(`¿Marcar recibido?\nSe agregarán ${p.cant} uds de ${p.ref} T${p.talla} al inventario.`))return;
+  if(!await pedirComp({tipo:'Gasto',desc:`Compra: ${p.ref} T${p.talla} x${p.cant}`,monto:p.total,pago:'Transferencia'}))return;
   const exist=await dbGet('inventario',`?nombre=eq.${encodeURIComponent(p.ref)}&talla=eq.${p.talla}`);
   if(exist&&exist[0]){await dbPatch('inventario',{cant:exist[0].cant+p.cant},`?id=eq.${exist[0].id}`);}
   else{await dbPost('inventario',{nombre:p.ref,talla:p.talla,genero:p.genero||'MIXTO',cant:p.cant,precio:0,pc:p.precio_compra,origen:'nuevo'});}
@@ -1162,7 +1277,7 @@ async function recibirPedidoProv(id){
   toast('Recibido · inventario actualizado ✓');goTo('pedidos-proveedor');
 }
 async function delPedidoProv(id){if(!confirm('¿Eliminar?'))return;await dbDel('pedidos_proveedor',`?id=eq.${id}`);toast('Eliminado');goTo('pedidos-proveedor');}
-function showAddMin(){document.getElementById('min-form').innerHTML=`<div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;margin-bottom:.75rem;align-items:flex-end">
+function showAddMin(){document.getElementById('min-form').innerHTML=`<div class="cols-min">
   <div><div style="font-size:11px;color:#aaa;margin-bottom:3px">Referencia</div><input id="mn-ref" placeholder="SAMBA"/></div>
   <div><div style="font-size:11px;color:#aaa;margin-bottom:3px">Talla</div><input id="mn-t" type="number" value="40"/></div>
   <div><div style="font-size:11px;color:#aaa;margin-bottom:3px">Mínimo uds</div><input id="mn-m" type="number" value="2"/></div>
@@ -1281,6 +1396,7 @@ async function regNomina(){
 }
 async function pagarNomina(id,total,emp,pago){
   if(!confirm(`¿Confirmar pago de ${fmt(total)} a ${emp}?`))return;
+  if(!await pedirComp({tipo:'Gasto',desc:`Nómina quincena — ${emp}`,monto:total,pago:pago||'Efectivo'}))return;
   await Promise.all([
     dbPatch('nomina',{estado:'Pagado'},`?id=eq.${id}`),
     dbPost('caja',{fecha:hoy(),tipo:'Gasto',descripcion:`Nómina quincena — ${emp}`,monto:total,forma_pago:pago||'Efectivo'}),
