@@ -83,6 +83,7 @@ blockquote cite{display:block;font-style:normal;font-weight:700;font-size:.78em;
 .prod.out .prod-img img{filter:grayscale(1);opacity:.5}
 .ph{width:100%;height:100%;display:grid;place-items:center;font-family:var(--track);letter-spacing:.3em;font-size:11px;color:#6f6a63;text-align:center;padding:12px}
 .promo{position:absolute;right:8px;bottom:10px;transform:rotate(-11deg);background:var(--yel);color:#000;border-radius:12px;padding:6px 12px;text-align:center;font-weight:800;line-height:1.1}
+.sold{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%) rotate(-8deg);background:#000;color:#fff;font-family:var(--track);font-weight:600;letter-spacing:.3em;text-indent:.3em;font-size:clamp(14px,2vw,18px);padding:10px 18px;pointer-events:none}
 .promo b{display:block;font-size:12px}
 .promo span{font-size:20px}
 .prod-name{background:var(--red);color:#000;font-family:var(--track);font-weight:600;letter-spacing:.38em;text-indent:.38em;text-transform:uppercase;font-size:clamp(12px,1.5vw,14px);text-align:center;padding:10px 8px;margin-top:10px;line-height:1.4}
@@ -262,7 +263,7 @@ html.mag .intro .strip{margin-top:clamp(16px,4dvh,56px);padding:clamp(12px,2.5dv
       <li>ESPERA CONFIRMACIÓN DE DISPONIBILIDAD</li>
       <li>SIGUE LOS PASOS PARA REALIZAR LA COMPRA BAJO PEDIDO</li>
     </ol>
-    <p style="text-align:center"><a href="https://wa.me/573242729986?text=Hola%20South%20Tennis%2C%20quiero%20conocer%20las%20pol%C3%ADticas%20de%20cambios%20y%20devoluci%C3%B3n%20para%20compras%20bajo%20pedido" target="_blank" rel="noopener">REVISA NUESTRAS POLÍTICAS DE CAMBIOS Y DEVOLUCIÓN PARA COMPRAS BAJO PEDIDO</a></p>
+    <p style="text-align:center"><a href="politicas.html">REVISA NUESTRAS POLÍTICAS DE CAMBIOS Y DEVOLUCIÓN PARA COMPRAS BAJO PEDIDO</a></p>
     </div>
   </div>
   <div class="strip">@SOUTHTENNIS.CO</div>
@@ -288,7 +289,7 @@ html.mag .intro .strip{margin-top:clamp(16px,4dvh,56px);padding:clamp(12px,2.5dv
       <a class="hl" href="https://www.google.com/maps/search/?api=1&query=CRA%2011%20%2345-30%20Centro%20Monter%C3%ADa" target="_blank" rel="noopener">CRA 11 #45-30 BARRIO CENTRO — MONTERÍA</a>
       <p>SIEMPRE SUJETAS A CONFIRMACIÓN DE TALLA</p>
       <p>TAMBIÉN REALIZAMOS VENTAS BAJO PEDIDO O BAJO ENCARGO CONFIRMANDO LA DISPONIBILIDAD. TEN EN CUENTA NUESTRAS</p>
-      <a class="hl u" href="https://wa.me/573242729986?text=Hola%20South%20Tennis%2C%20quiero%20conocer%20las%20pol%C3%ADticas%20de%20cambio%20y%20devoluci%C3%B3n" target="_blank" rel="noopener">POLÍTICAS DE CAMBIO Y DEVOLUCIÓN</a>
+      <a class="hl u" href="politicas.html">POLÍTICAS DE CAMBIO Y DEVOLUCIÓN</a>
       <p>Y SEGUIR EL DEBIDO PROCESO PARA REALIZAR LA COMPRA</p>
       <p>PUEDES COMUNICARTE CON NOSOTROS POR</p>
       <a class="hl" href="https://wa.me/573242729986" target="_blank" rel="noopener">3242729986</a>
@@ -407,7 +408,7 @@ function card(g,out){
   }
   const color=g.color?`<div class="colorline"><b>COLOR</b><span>${esc(String(g.color).toUpperCase())}</span></div>`:'';
   const ask=out?`<span class="na">AGOTADO</span><a class="ask" href="https://wa.me/${WA}?text=${encodeURIComponent('Hola South Tennis, quiero consultar la referencia '+g.nombre+' bajo pedido.')}" target="_blank" rel="noopener">Consultar bajo pedido</a>`:'';
-  return`<article class="prod${out?' out':''}"><div class="prod-img">${foto(g)}${promoHtml}</div><h3 class="prod-name">${esc(g.nombre)}</h3>${priceHtml?`<p class="prod-price">${priceHtml}</p>`:''}${cols}${color}${ask}</article>`;
+  return`<article class="prod${out?' out':''}"><div class="prod-img">${foto(g)}${promoHtml}${out?'<span class="sold">AGOTADO</span>':''}</div><h3 class="prod-name">${esc(g.nombre)}</h3>${priceHtml?`<p class="prod-price">${priceHtml}</p>`:''}${cols}${color}${ask}</article>`;
 }
 
 function render(){
@@ -431,7 +432,7 @@ function render(){
     return;
   }
   const sec=(t,l,out)=>l.length?`<h2 class="sec-title">${t}</h2><div class="grid">${l.map(g=>card(g,out)).join('')}</div>`:'';
-  root.innerHTML=sec('PRINCIPALES REF',princ,false)+sec(princ.length?'OTRAS REF':'REFERENCIAS',otras,false)+sec('ÚLTIMO PAR',agot,true);
+  root.innerHTML=sec('PRINCIPALES REF',princ,false)+sec(princ.length?'OTRAS REF':'REFERENCIAS',otras,false)+sec('AGOTADOS',agot,true);
 }
 
 /* ── filtros ── */
@@ -529,6 +530,7 @@ function goPage(i){
   });
   $('mag-n').textContent=String(cur+1).padStart(2,'0')+' / '+String(pages.length).padStart(2,'0');
   $('mag-prev').disabled=cur===0;$('mag-next').disabled=cur===pages.length-1;
+  try{history.replaceState(null,'',cur?'#p'+(cur+1):location.pathname+location.search)}catch(e){}
 }
 $('mag-prev').onclick=()=>goPage(cur-1);$('mag-next').onclick=()=>goPage(cur+1);
 document.addEventListener('keydown',e=>{
@@ -541,7 +543,8 @@ book.addEventListener('touchend',e=>{
   const dx=e.changedTouches[0].clientX-tx,dy=e.changedTouches[0].clientY-ty;
   if(Math.abs(dx)>60&&Math.abs(dx)>Math.abs(dy)*1.5)goPage(dx<0?cur+1:cur-1);
 },{passive:true});
-goPage(0);
+const startPg=/^#p(\d+)$/.exec(location.hash);
+goPage(startPg?Math.max(1,Math.min(pages.length,+startPg[1]))-1:0);
 
 /* ── las páginas antes del catálogo se ajustan para verse completas (sin scroll) ── */
 const FIT_PAGES=4,NAV_SPACE=64;
