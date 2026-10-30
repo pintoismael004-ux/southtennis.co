@@ -151,6 +151,21 @@ legend{font-family:var(--track);font-weight:600;letter-spacing:.18em;font-size:1
 .empty{text-align:center;padding:40px 10px;font-weight:700;line-height:1.7}
 .toast{position:fixed;left:50%;top:14px;transform:translateX(-50%);background:#000;color:#fff;padding:10px 16px;font-size:13px;font-weight:600;z-index:120;opacity:0;pointer-events:none;transition:opacity .2s;max-width:90vw;text-align:center}
 .toast.on{opacity:1}
+
+/* ───────── REVISTA (PASO DE PÁGINAS) ───────── */
+html.mag,html.mag body{height:100%;overflow:hidden}
+.book{position:fixed;inset:0;perspective:2200px;perspective-origin:0 50%;background:#1b1916}
+.pg{position:absolute;inset:0;transform-origin:left center;transform-style:preserve-3d;backface-visibility:hidden;-webkit-backface-visibility:hidden;transition:transform .9s cubic-bezier(.645,.045,.355,1),visibility 0s;box-shadow:0 0 30px rgba(0,0,0,.35)}
+.pg-in{position:absolute;inset:0;overflow-y:auto;overscroll-behavior:contain;background:var(--cream)}
+.pg-in>*{min-height:100%}
+.pg-sh{position:absolute;inset:0;pointer-events:none;background:linear-gradient(to right,rgba(0,0,0,.28),rgba(0,0,0,.08) 30%,rgba(0,0,0,.18));opacity:0;transition:opacity .9s cubic-bezier(.645,.045,.355,1)}
+.pg.past{transform:rotateY(-180deg);visibility:hidden;transition:transform .9s cubic-bezier(.645,.045,.355,1),visibility 0s .9s}
+.pg.past .pg-sh,.pg.next .pg-sh{opacity:1}
+.pg.far{visibility:hidden}
+.mag-nav{position:fixed;left:16px;bottom:16px;z-index:90;display:flex;align-items:center;background:#000;color:#fff;min-height:48px}
+.mag-nav button{background:none;border:0;color:#fff;width:48px;height:48px;font-size:22px;cursor:pointer}
+.mag-nav button:disabled{opacity:.3;cursor:default}
+.mag-nav span{font-family:var(--mono);font-size:13px;letter-spacing:.08em;min-width:62px;text-align:center}
 </style>
 </head>
 <body>
@@ -255,6 +270,11 @@ legend{font-family:var(--track);font-weight:600;letter-spacing:.18em;font-size:1
   </div>
 </aside>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
+<nav class="mag-nav" id="mag-nav" aria-label="Páginas del catálogo" hidden>
+  <button id="mag-prev" aria-label="Página anterior">‹</button>
+  <span id="mag-n" aria-live="polite">01 / 06</span>
+  <button id="mag-next" aria-label="Página siguiente">›</button>
+</nav>
 
 <script>
 const SB='https://imjdjitpxuwulpsgezdf.supabase.co';
@@ -425,6 +445,45 @@ function fit(el,max){
 function fitAll(){fit($('wm'),300);}
 if(document.fonts&&document.fonts.ready)document.fonts.ready.then(fitAll);
 window.addEventListener('resize',fitAll);window.addEventListener('load',fitAll);fitAll();
+
+/* ── revista: cada sección es una página que se pasa como en una revista ── */
+const pages=[...document.querySelectorAll('body>.cover,body>section,body>main')].map(sec=>{
+  const pg=document.createElement('div');pg.className='pg';
+  const inn=document.createElement('div');inn.className='pg-in';
+  const sh=document.createElement('div');sh.className='pg-sh';
+  sec.before(pg);inn.appendChild(sec);pg.append(inn,sh);
+  return pg;
+});
+const book=document.createElement('div');book.className='book';
+pages[0].before(book);book.append(...pages);
+document.documentElement.classList.add('mag');
+$('mag-nav').hidden=false;
+let cur=0;
+function goPage(i){
+  if(i<0||i>=pages.length)return;
+  cur=i;
+  pages.forEach((p,k)=>{
+    p.style.zIndex=pages.length-k;
+    p.classList.toggle('past',k<cur);
+    p.classList.toggle('next',k>cur);
+    p.classList.toggle('far',k>cur+1);
+    p.inert=k!==cur;
+  });
+  $('mag-n').textContent=String(cur+1).padStart(2,'0')+' / '+String(pages.length).padStart(2,'0');
+  $('mag-prev').disabled=cur===0;$('mag-next').disabled=cur===pages.length-1;
+}
+$('mag-prev').onclick=()=>goPage(cur-1);$('mag-next').onclick=()=>goPage(cur+1);
+document.addEventListener('keydown',e=>{
+  if($('panel').classList.contains('open')||e.target.closest('input'))return;
+  if(e.key==='ArrowRight')goPage(cur+1);else if(e.key==='ArrowLeft')goPage(cur-1);
+});
+let tx=0,ty=0;
+book.addEventListener('touchstart',e=>{tx=e.touches[0].clientX;ty=e.touches[0].clientY},{passive:true});
+book.addEventListener('touchend',e=>{
+  const dx=e.changedTouches[0].clientX-tx,dy=e.changedTouches[0].clientY-ty;
+  if(Math.abs(dx)>60&&Math.abs(dx)>Math.abs(dy)*1.5)goPage(dx<0?cur+1:cur-1);
+},{passive:true});
+goPage(0);
 
 renderCart();cargar();setInterval(cargar,60000);
 </script>
