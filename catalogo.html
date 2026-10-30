@@ -358,6 +358,27 @@ let rows=[],byId=new Map(),genero='TODOS',q='',loaded=false,loadErr=false,cart=[
 $('year').textContent=new Date().getFullYear();
 try{cart=JSON.parse(localStorage.getItem('st_cart')||'[]')}catch(e){cart=[]}
 
+/* ── referencias que el catálogo muestra SIEMPRE con 1 par por talla ──
+   Solo afecta lo que ven los clientes; el inventario interno de la tienda no cambia. */
+const SIEMPRE={
+  'AF1':[36,37,38,39,40,41,42,43,44],
+  'SAMBA':[36,37,38,39],
+};
+function siempreDisponible(data){
+  const out=data.filter(r=>!(SIEMPRE[r.nombre]&&SIEMPRE[r.nombre].includes(r.talla)));
+  for(const[nombre,tallas]of Object.entries(SIEMPRE)){
+    const ref=data.filter(r=>r.nombre===nombre);
+    for(const t of tallas){
+      const fila=ref.filter(r=>r.talla===t).sort((a,b)=>a.id-b.id)[0];
+      if(fila){out.push({...fila,cant:1});continue}
+      // la talla no existe en el inventario: se toma el género y los datos de la talla más cercana
+      const base=ref.slice().sort((a,b)=>Math.abs(a.talla-t)-Math.abs(b.talla-t))[0];
+      if(base)out.push({...base,id:-(base.id*100+t),talla:t,cant:1});
+    }
+  }
+  return out.sort((a,b)=>a.nombre.localeCompare(b.nombre)||a.talla-b.talla);
+}
+
 /* ── datos ── */
 async function cargar(){
   try{
@@ -366,7 +387,7 @@ async function cargar(){
     if(!r.ok)throw new Error(r.status);
     const data=(await r.json()).filter(x=>x&&x.nombre),sig=JSON.stringify(data);
     if(loaded&&sig===lastSig)return;   // sin cambios: no rearmar las páginas
-    lastSig=sig;rows=data;
+    lastSig=sig;rows=siempreDisponible(data);
     byId=new Map(rows.map(x=>[x.id,x]));
     loaded=true;loadErr=false;syncCart();
   }catch(e){if(!loaded)loadErr=true}
