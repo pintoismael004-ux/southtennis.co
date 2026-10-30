@@ -361,7 +361,8 @@ try{cart=JSON.parse(localStorage.getItem('st_cart')||'[]')}catch(e){cart=[]}
 /* ── datos ── */
 async function cargar(){
   try{
-    const r=await fetch(`${SB}/rest/v1/inventario?select=*&order=nombre,talla`,{headers:{apikey:KEY,Authorization:'Bearer '+KEY}});
+    // solo columnas públicas: el precio de compra (pc) no es visible para los clientes
+    const r=await fetch(`${SB}/rest/v1/inventario?select=id,nombre,talla,genero,cant,precio,foto_url&order=nombre,talla`,{headers:{apikey:KEY,Authorization:'Bearer '+KEY}});
     if(!r.ok)throw new Error(r.status);
     const data=(await r.json()).filter(x=>x&&x.nombre),sig=JSON.stringify(data);
     if(loaded&&sig===lastSig)return;   // sin cambios: no rearmar las páginas

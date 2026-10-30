@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>South Tennis — Productos</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@500;600&family=Open+Sans:wght@500;600;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --red:#F00000; --hot:#FF3030; --cream:#F7F4F1; --ink:#2E2B27; --yel:#FFEB00; --line:#D9D4CE; --mute:#6c675f;
+  --disp:'Open Sans',system-ui,sans-serif; --track:'Montserrat','Open Sans',sans-serif; --mono:'Space Mono',ui-monospace,monospace;
+}
+body{background:var(--cream);color:var(--ink);font-family:var(--disp);-webkit-text-size-adjust:100%;min-height:100vh}
+button,input,select{font:inherit;color:inherit}
+img{display:block;max-width:100%}
+:focus-visible{outline:3px solid #000;outline-offset:2px}
+[hidden]{display:none!important}
+
+.btn{border:2px solid #000;background:#fff;cursor:pointer;font-family:var(--track);font-weight:600;font-size:12px;letter-spacing:.12em;padding:10px 14px;min-height:44px;display:inline-flex;align-items:center;justify-content:center;gap:6px;text-decoration:none;text-transform:uppercase}
+.btn.dark{background:#000;color:#fff}
+.btn.red{background:var(--red);border-color:var(--red);color:#fff}
+.btn.ghost{border-color:transparent;background:none;text-decoration:underline;text-underline-offset:3px}
+.btn:disabled{opacity:.5;cursor:default}
+input,select{border:2px solid #000;background:#fff;padding:9px 10px;min-height:44px;width:100%;font-size:15px;border-radius:0}
+label.f{display:block;font-family:var(--track);font-weight:600;font-size:11px;letter-spacing:.14em;text-transform:uppercase;margin-bottom:4px}
+
+/* ── ingreso ── */
+.login{min-height:100vh;display:grid;place-items:center;padding:16px;background:#111}
+.login form{background:var(--cream);width:min(100%,360px);padding:28px 22px;border:2px solid #000}
+.login .wm{font-weight:800;font-size:56px;letter-spacing:-.045em;line-height:.85;color:var(--hot);text-align:center}
+.login p{text-align:center;font-family:var(--track);font-weight:600;letter-spacing:.3em;font-size:11px;margin:8px 0 22px}
+.login .f{margin-top:12px}
+.login .btn{width:100%;margin-top:18px}
+.err{color:#B00000;font-weight:700;font-size:13px;min-height:18px;margin-top:10px}
+
+/* ── lista ── */
+.top{background:#000;color:#fff;display:flex;align-items:center;gap:10px;padding:10px 16px;position:sticky;top:0;z-index:20}
+.top b{font-weight:800;font-size:22px;letter-spacing:-.04em;color:var(--hot)}
+.top span{font-family:var(--track);font-weight:600;letter-spacing:.3em;font-size:11px}
+.top .sp{flex:1}
+.top a,.top button{color:#fff;background:none;border:0;font-family:var(--track);font-weight:600;font-size:11px;letter-spacing:.12em;cursor:pointer;min-height:40px;padding:0 6px;text-decoration:underline;text-underline-offset:3px}
+.wrap{max-width:1100px;margin:0 auto;padding:16px 16px 60px}
+.tools{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.tools input{flex:1 1 200px;width:auto;font-family:var(--mono)}
+.count{font-family:var(--mono);font-size:12px;color:var(--mute);margin:12px 0}
+.list{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,250px),1fr));gap:14px}
+.item{background:#fff;border:2px solid #000;display:flex;gap:12px;padding:10px;cursor:pointer;text-align:left;width:100%;align-items:center}
+.item:hover{background:#FFF9C4}
+.thumb{width:76px;height:76px;flex:none;background:#EFEBE6;display:grid;place-items:center;overflow:hidden}
+.thumb img{width:100%;height:100%;object-fit:contain}
+.thumb small{font-family:var(--mono);font-size:9px;color:var(--mute);text-align:center;padding:4px}
+.item h3{font-family:var(--track);font-weight:600;letter-spacing:.14em;font-size:13px;text-transform:uppercase}
+.item .meta{font-family:var(--mono);font-size:12px;color:var(--mute);margin-top:4px;line-height:1.5}
+.tag{display:inline-block;background:#000;color:#fff;font-family:var(--track);font-weight:600;font-size:10px;letter-spacing:.14em;padding:3px 6px;margin-top:6px}
+.state{padding:40px 8px;text-align:center;font-weight:700;line-height:1.7}
+
+/* ── editor ── */
+.ovl{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:40}
+.ed{position:fixed;top:0;right:0;height:100vh;height:100dvh;width:min(560px,100%);background:var(--cream);z-index:50;display:flex;flex-direction:column;border-left:2px solid #000}
+.ed-head{background:#000;color:#fff;display:flex;align-items:center;justify-content:space-between;padding:8px 8px 8px 18px}
+.ed-head h2{font-family:var(--track);font-weight:600;letter-spacing:.24em;font-size:13px;text-transform:uppercase}
+.x{background:none;border:0;color:#fff;font-size:28px;width:44px;height:44px;cursor:pointer}
+.ed-body{flex:1;overflow-y:auto;padding:16px 18px 24px}
+.ed-foot{border-top:2px solid #000;background:#fff;padding:12px 18px;display:flex;gap:8px;flex-wrap:wrap}
+.ed-foot .btn.dark{flex:1}
+.photo{display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center}
+.photo .pv{width:140px;height:140px;background:#EFEBE6;border:2px solid #000;display:grid;place-items:center;overflow:hidden}
+.photo .pv img{width:100%;height:100%;object-fit:contain}
+.photo .pv small{font-family:var(--mono);font-size:11px;color:var(--mute);text-align:center;padding:6px}
+.photo .acts{display:flex;flex-direction:column;gap:8px;align-items:flex-start}
+.photo .note{font-size:12px;color:var(--mute);line-height:1.5}
+.fld{margin-top:16px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+h3.sec{font-family:var(--track);font-weight:600;letter-spacing:.24em;font-size:12px;margin:24px 0 10px;padding-bottom:6px;border-bottom:2px solid var(--line);display:flex;justify-content:space-between;align-items:baseline}
+h3.sec small{font-family:var(--mono);letter-spacing:0;font-weight:400;color:var(--mute)}
+.sz-row{display:grid;grid-template-columns:78px 1fr 78px 44px;gap:6px;margin-bottom:6px;align-items:center}
+.sz-row.headr{font-family:var(--track);font-weight:600;font-size:10px;letter-spacing:.12em;color:var(--mute);margin-bottom:4px}
+.sz-row input,.sz-row select{padding:8px 6px;font-family:var(--mono)}
+.del{width:44px;height:44px;border:2px solid #000;background:#fff;cursor:pointer;font-size:18px;line-height:1}
+.del:hover{background:var(--red);color:#fff;border-color:var(--red)}
+.add{margin-top:6px}
+
+.toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:#000;color:#fff;padding:12px 18px;font-size:14px;font-weight:600;z-index:90;opacity:0;pointer-events:none;transition:opacity .2s;max-width:calc(100vw - 32px);text-align:center}
+.toast.on{opacity:1}
+.toast.bad{background:#B00000}
+</style>
+</head>
+<body>
+
+<!-- ── ingreso (solo administrador) ── -->
+<div class="login" id="login">
+  <form id="login-f" autocomplete="on">
+    <div class="wm">SOUTH</div>
+    <p>PRODUCTOS DEL CATÁLOGO</p>
+    <label class="f" for="lu">USUARIO</label>
+    <input id="lu" autocomplete="username" autocapitalize="none">
+    <label class="f" for="lp">CONTRASEÑA</label>
+    <input id="lp" type="password" autocomplete="current-password">
+    <button class="btn dark" type="submit">ENTRAR</button>
+    <div class="err" id="lerr" role="alert"></div>
+  </form>
+</div>
+
+<!-- ── lista de productos ── -->
+<div id="app" hidden>
+  <header class="top">
+    <b>SOUTH</b><span>PRODUCTOS</span><span class="sp"></span>
+    <a href="catalogo.html" target="_blank" rel="noopener">VER CATÁLOGO</a>
+    <button id="out">SALIR</button>
+  </header>
+  <div class="wrap">
+    <div class="tools">
+      <input id="find" type="search" placeholder="BUSCAR REFERENCIA" autocomplete="off" aria-label="Buscar referencia">
+      <button class="btn dark" id="new">+ NUEVO PRODUCTO</button>
+    </div>
+    <p class="count" id="count"></p>
+    <div class="list" id="list"><div class="state">Cargando productos…</div></div>
+  </div>
+</div>
+
+<!-- ── editor ── -->
+<div class="ovl" id="ovl" hidden></div>
+<aside class="ed" id="ed" role="dialog" aria-modal="true" aria-labelledby="ed-t" hidden>
+  <div class="ed-head"><h2 id="ed-t">PRODUCTO</h2><button class="x" id="ed-x" aria-label="Cerrar">×</button></div>
+  <div class="ed-body" id="ed-body"></div>
+  <div class="ed-foot">
+    <button class="btn dark" id="save">GUARDAR CAMBIOS</button>
+    <button class="btn" id="cancel">CANCELAR</button>
+    <button class="btn ghost" id="remove">ELIMINAR PRODUCTO</button>
+  </div>
+</aside>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script src="sesion.js"></script>
+<script>
+const SB=ST_SB;
+const BUCKET='ZAPATOS';
+/* tablas del sistema de gestión que guardan el nombre de la referencia en "ref" */
+const REF_TABLES=['ventas','creditos','pedidos_proveedor','stock_minimo'];
+const GENEROS=['DAMA','CABALLERO','MIXTO'];
+const $=id=>document.getElementById(id);
+const fmt=n=>new Intl.NumberFormat('es-CO',{style:'currency',currency:'COP',maximumFractionDigits:0}).format(n||0);
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+/* ── base de datos (con la sesión del administrador, ver sesion.js) ── */
+async function req(method,path,body){
+  const r=await Sesion.fetch(`${SB}/rest/v1/${path}`,{method,headers:{'Content-Type':'application/json',Prefer:'return=representation'},...(body?{body:JSON.stringify(body)}:{})});
+  const txt=await r.text();
+  if(!r.ok)throw new Error(`${r.status} ${txt.slice(0,160)}`);
+  return txt?JSON.parse(txt):[];
+}
+async function uploadFoto(blob,nombre){
+  const slug=nombre.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')||'producto';
+  const path=`${slug}-${Date.now()}.jpg`;
+  const r=await Sesion.fetch(`${SB}/storage/v1/object/${BUCKET}/${path}`,{method:'POST',headers:{'Content-Type':blob.type||'image/jpeg'},body:blob});
+  if(!r.ok){
+    const t=await r.text();
+    throw new Error(r.status===400||r.status===403
+      ?'Supabase no permite subir fotos todavía: falta ejecutar supabase/seguridad.sql.'
+      :`No se pudo subir la foto (${r.status}) ${t.slice(0,120)}`);
+  }
+  return `${SB}/storage/v1/object/public/${BUCKET}/${path}`;
+}
+/* reduce la foto antes de subirla (las del celular pesan varios MB) */
+async function shrink(file){
+  try{
+    const img=await createImageBitmap(file);
+    const s=Math.min(1,1600/Math.max(img.width,img.height));
+    const c=document.createElement('canvas');c.width=Math.round(img.width*s);c.height=Math.round(img.height*s);
+    c.getContext('2d').drawImage(img,0,0,c.width,c.height);
+    return await new Promise(res=>c.toBlob(b=>res(b||file),'image/jpeg',.85));
+  }catch(e){return file}
+}
+
+/* ── estado ── */
+let rows=[],q='',E=null,saving=false;
+function grupos(){
+  const m=new Map();
+  for(const r of rows){
+    if(!m.has(r.nombre))m.set(r.nombre,{nombre:r.nombre,rows:[],foto:null});
+    const g=m.get(r.nombre);g.rows.push(r);if(!g.foto&&r.foto_url)g.foto=r.foto_url;
+  }
+  return[...m.values()].sort((a,b)=>a.nombre.localeCompare(b.nombre));
+}
+async function load(){
+  try{rows=(await req('GET','inventario?select=*&order=nombre,talla')).filter(r=>r&&r.nombre);renderList()}
+  catch(e){$('list').innerHTML=`<div class="state">No se pudo cargar el inventario.<br><button class="btn" onclick="load()">REINTENTAR</button></div>`}
+}
+
+/* ── lista ── */
+function renderList(){
+  const qq=q.trim().toLowerCase();
+  const gs=grupos().filter(g=>!qq||g.nombre.toLowerCase().includes(qq));
+  const und=gs.reduce((a,g)=>a+g.rows.reduce((b,r)=>b+(r.cant||0),0),0);
+  $('count').textContent=`${gs.length} referencias · ${und} pares`;
+  $('list').innerHTML=gs.length?gs.map(g=>{
+    const tot=g.rows.reduce((a,r)=>a+(r.cant||0),0);
+    const tallas=[...new Set(g.rows.filter(r=>r.cant>0).map(r=>r.talla))].sort((a,b)=>a-b);
+    const precio=g.rows[0].precio;
+    return`<button class="item" data-n="${esc(g.nombre)}">
+      <div class="thumb">${g.foto?`<img src="${esc(g.foto)}" alt="" loading="lazy">`:'<small>SIN FOTO</small>'}</div>
+      <div><h3>${esc(g.nombre)}</h3>
+        <div class="meta">${fmt(precio)} · ${tot} par${tot===1?'':'es'}<br>${tallas.length?'Tallas '+tallas.join(' · '):''}</div>
+        ${tot?'':'<span class="tag">AGOTADO</span>'}</div>
+    </button>`;
+  }).join(''):`<div class="state">No hay referencias con ese nombre.</div>`;
+}
+$('list').addEventListener('click',e=>{const b=e.target.closest('.item');if(b)openEditor(b.dataset.n)});
+$('find').addEventListener('input',e=>{q=e.target.value;renderList()});
+$('new').onclick=()=>openEditor(null);
+
+/* ── editor ── */
+function openEditor(nombre){
+  const g=nombre?grupos().find(x=>x.nombre===nombre):null;
+  E=g?{orig:g.nombre,nombre:g.nombre,precio:g.rows[0].precio||0,pc:g.rows[0].pc||0,foto:g.foto,file:null,preview:null,removed:[],
+       sizes:g.rows.map(r=>({id:r.id,talla:r.talla,genero:r.genero||'MIXTO',cant:r.cant||0}))}
+     :{orig:null,nombre:'',precio:165000,pc:100000,foto:null,file:null,preview:null,removed:[],sizes:[{talla:'',genero:'DAMA',cant:1}]};
+  $('ed-t').textContent=g?'EDITAR PRODUCTO':'NUEVO PRODUCTO';
+  $('remove').hidden=!g;
+  renderEditor();
+  $('ed').hidden=false;$('ovl').hidden=false;
+  (g?$('ed-x'):$('e-n')).focus();
+}
+function closeEditor(){
+  if(E&&E.preview)URL.revokeObjectURL(E.preview);
+  E=null;$('ed').hidden=true;$('ovl').hidden=true;
+}
+function renderEditor(){
+  const src=E.preview||E.foto;
+  $('ed-body').innerHTML=`
+    <div class="photo">
+      <div class="pv">${src?`<img src="${esc(src)}" alt="Foto del producto">`:'<small>SIN FOTO</small>'}</div>
+      <div class="acts">
+        <label class="btn" for="e-file">${src?'CAMBIAR FOTO':'SUBIR FOTO'}</label>
+        <input id="e-file" type="file" accept="image/*" hidden>
+        ${src?'<button class="btn ghost" id="e-nofoto" type="button">QUITAR FOTO</button>':''}
+        <p class="note">Toma o elige una foto. Se ajusta sola antes de subirla.</p>
+      </div>
+    </div>
+    <div class="fld"><label class="f" for="e-n">NOMBRE / REFERENCIA</label><input id="e-n" value="${esc(E.nombre)}" placeholder="EJ: AF1" autocomplete="off"></div>
+    <div class="fld two">
+      <div><label class="f" for="e-pv">PRECIO VENTA</label><input id="e-pv" type="number" inputmode="numeric" min="0" step="1000" value="${E.precio}"></div>
+      <div><label class="f" for="e-pc">PRECIO COMPRA</label><input id="e-pc" type="number" inputmode="numeric" min="0" step="1000" value="${E.pc}"></div>
+    </div>
+    <h3 class="sec">TALLAS <small>${E.sizes.reduce((a,s)=>a+(+s.cant||0),0)} pares</small></h3>
+    <div class="sz-row headr"><span>TALLA</span><span>GÉNERO</span><span>CANT.</span><span></span></div>
+    <div id="e-sizes">${E.sizes.map((s,i)=>`<div class="sz-row" data-i="${i}">
+      <input type="number" inputmode="numeric" min="20" max="50" data-k="talla" value="${esc(s.talla)}" aria-label="Talla">
+      <select data-k="genero" aria-label="Género">${GENEROS.map(x=>`<option${x===s.genero?' selected':''}>${x}</option>`).join('')}</select>
+      <input type="number" inputmode="numeric" min="0" data-k="cant" value="${esc(s.cant)}" aria-label="Cantidad">
+      <button class="del" type="button" data-del="${i}" aria-label="Quitar talla">×</button>
+    </div>`).join('')}</div>
+    <button class="btn add" id="e-add" type="button">+ AGREGAR TALLA</button>`;
+}
+/* copia lo escrito en el formulario al estado E */
+function readForm(){
+  E.nombre=$('e-n').value.trim().toUpperCase();
+  E.precio=Math.max(0,parseInt($('e-pv').value)||0);
+  E.pc=Math.max(0,parseInt($('e-pc').value)||0);
+  document.querySelectorAll('#e-sizes .sz-row').forEach(row=>{
+    const s=E.sizes[+row.dataset.i];
+    s.talla=row.querySelector('[data-k=talla]').value;
+    s.genero=row.querySelector('[data-k=genero]').value;
+    s.cant=row.querySelector('[data-k=cant]').value;
+  });
+}
+$('ed-body').addEventListener('click',e=>{
+  if(e.target.id==='e-add'){readForm();const last=E.sizes[E.sizes.length-1];E.sizes.push({talla:'',genero:last?last.genero:'DAMA',cant:1});renderEditor();
+    const ins=document.querySelectorAll('#e-sizes [data-k=talla]');ins[ins.length-1].focus();return}
+  const d=e.target.closest('[data-del]');
+  if(d){readForm();const [s]=E.sizes.splice(+d.dataset.del,1);if(s.id)E.removed.push(s.id);renderEditor();return}
+  if(e.target.id==='e-nofoto'){readForm();if(E.preview)URL.revokeObjectURL(E.preview);E.foto=null;E.file=null;E.preview=null;renderEditor()}
+});
+$('ed-body').addEventListener('change',async e=>{
+  if(e.target.id!=='e-file'||!e.target.files[0])return;
+  readForm();
+  const f=e.target.files[0];
+  if(E.preview)URL.revokeObjectURL(E.preview);
+  E.file=await shrink(f);E.preview=URL.createObjectURL(E.file);
+  renderEditor();
+});
+
+async function save(){
+  if(saving)return;
+  readForm();
+  const err=m=>{toast(m,true)};
+  if(!E.nombre)return err('Escribe el nombre de la referencia.');
+  const otro=E.nombre!==E.orig&&rows.some(r=>r.nombre===E.nombre);
+  if(otro&&!confirm(`Ya existe una referencia llamada ${E.nombre}. Si continúas, las tallas se unirán a esa referencia. ¿Continuar?`))return;
+  const sizes=E.sizes.map(s=>({...s,talla:parseInt(s.talla),cant:Math.max(0,parseInt(s.cant)||0)}));
+  if(!sizes.length&&E.orig)return err('Deja al menos una talla, o usa "Eliminar producto".');
+  if(!sizes.length)return err('Agrega al menos una talla.');
+  if(sizes.some(s=>!(s.talla>=20&&s.talla<=50)))return err('Revisa las tallas: deben ser números entre 20 y 50.');
+  const keys=sizes.map(s=>s.talla+s.genero);
+  if(new Set(keys).size!==keys.length)return err('Hay una talla repetida con el mismo género. Súmala en una sola fila.');
+
+  saving=true;$('save').disabled=true;$('save').textContent='GUARDANDO…';
+  try{
+    let foto=E.foto||null;
+    if(E.file)foto=await uploadFoto(E.file,E.nombre);
+    const common={nombre:E.nombre,precio:E.precio,pc:E.pc,foto_url:foto};
+    if(E.removed.length)await req('DELETE',`inventario?id=in.(${E.removed.join(',')})`);
+    for(const s of sizes.filter(s=>s.id))await req('PATCH',`inventario?id=eq.${s.id}`,{...common,talla:s.talla,genero:s.genero,cant:s.cant});
+    const nuevos=sizes.filter(s=>!s.id).map(s=>({...common,talla:s.talla,genero:s.genero,cant:s.cant,origen:'nuevo'}));
+    if(nuevos.length)await req('POST','inventario',nuevos);
+    // al renombrar, las ventas, créditos y pedidos siguen apuntando a la referencia (así devolver stock sigue funcionando)
+    if(E.orig&&E.nombre!==E.orig){
+      const o=encodeURIComponent(E.orig);
+      await Promise.all(REF_TABLES.map(t=>req('PATCH',`${t}?ref=eq.${o}`,{ref:E.nombre})));
+    }
+    toast(E.orig?'Cambios guardados ✓':'Producto creado ✓');
+    closeEditor();await load();
+  }catch(e){err(e.message)}
+  finally{saving=false;$('save').disabled=false;$('save').textContent='GUARDAR CAMBIOS'}
+}
+async function removeProduct(){
+  if(!E||!E.orig)return;
+  if(!confirm(`¿Eliminar ${E.orig} con todas sus tallas? Esto no se puede deshacer.`))return;
+  try{await req('DELETE',`inventario?nombre=eq.${encodeURIComponent(E.orig)}`);toast('Producto eliminado');closeEditor();await load()}
+  catch(e){toast(e.message,true)}
+}
+$('save').onclick=save;$('remove').onclick=removeProduct;
+$('cancel').onclick=closeEditor;$('ed-x').onclick=closeEditor;$('ovl').onclick=closeEditor;
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('ed').hidden)closeEditor()});
+
+let toastT;
+function toast(m,bad){const t=$('toast');t.textContent=m;t.classList.toggle('bad',!!bad);t.classList.add('on');clearTimeout(toastT);toastT=setTimeout(()=>t.classList.remove('on'),bad?5000:2400)}
+
+/* ── sesión ── */
+function enter(){$('login').hidden=true;$('app').hidden=false;load()}
+function showLogin(msg){closeEditor();$('app').hidden=true;$('login').hidden=false;$('lerr').textContent=msg||''}
+$('login-f').addEventListener('submit',async e=>{
+  e.preventDefault();
+  $('lerr').textContent='';
+  try{
+    const s=await Sesion.entrar($('lu').value,$('lp').value);
+    if(s.permiso!=='administrador'){Sesion.salir();$('lerr').textContent='Solo el administrador puede editar productos.';return}
+    $('lp').value='';enter();
+  }catch(err){$('lerr').textContent=err.message}
+});
+$('out').onclick=()=>{Sesion.salir();showLogin()};
+Sesion.alExpirar=()=>showLogin('Tu sesión venció. Ingresa de nuevo.');
+const s0=Sesion.cargar();
+if(s0&&s0.permiso==='administrador')enter();
+</script>
+</body>
+</html>
