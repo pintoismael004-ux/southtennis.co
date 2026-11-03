@@ -368,7 +368,9 @@ const calcSaldos=()=>saldoDe(S.caja,S.cfg);
 // su costo ya se descuenta como costo de lo vendido (si no, se restaba dos veces)
 // Tipos de movimiento que sacan plata de caja. Solo "Gasto" (que no sea compra de mercancía) baja la utilidad:
 // un retiro de socio, un pago de deuda al proveedor o una devolución a un cliente no son gasto del negocio.
-const SALIDAS=['Gasto','Retiro socio','Pago proveedor','Devolución'];
+// "Traslado salida/entrada" mueve plata entre efectivo y banco; "Ajuste" corrige la caja tras contarla (Caja → Cuadre)
+const SALIDAS=['Gasto','Retiro socio','Pago proveedor','Devolución','Traslado salida','Ajuste faltante'];
+const esTraslado=r=>r.tipo==='Traslado salida'||r.tipo==='Traslado entrada';
 const TIPOS_MOV=['Gasto','Ingreso manual','Aporte Capital','Retiro socio','Pago proveedor','Devolución'];
 const esSalida=r=>SALIDAS.includes(r.tipo);
 const esCompraInv=r=>r.tipo==='Pago proveedor'||(r.tipo==='Gasto'&&/^Compra:/.test(r.descripcion||''));
@@ -394,7 +396,45 @@ const paresV=()=>S.ventas.reduce((a,b)=>a+(b.cant||0),0);
 const capitalSocios=()=>S.socios.reduce((a,s)=>a+(s.aporte_efectivo||0)+(s.aporte_inventario||0),0);
 const invInicial=()=>S.inventario.filter(r=>r.origen==='inicial');
 const invNuevo=()=>S.inventario.filter(r=>r.origen!=='inicial');
-const valInv=(arr)=>arr.reduce((a,b)=>a+(b.cant*(b.pc||0)),0);
+const valInv=(arr)=>arr.reduce((a,b)=>a+((b.cant||0)*(b.pc||0)),0);
+const num=v=>{const n=Math.round(Number(String(v??'').replace(/\s/g,'')));return Number.isFinite(n)?n:0;};
+const val=id=>document.getElementById(id)?.value??'';
+// Bloqueo por operación (evita doble registro con doble clic)
+const _lk=new Set();
+async function conBloqueo(k,fn){if(_lk.has(k))return;_lk.add(k);try{return await fn();}finally{_lk.delete(k);}}
+const stockMinDe=r=>{const m=(S.stockMin||[]).find(x=>x.ref===r.nombre&&Number(x.talla)===Number(r.talla));return m?m.stock_minimo:1;};
+// Costo promedio ponderado al sumar unidades compradas a otro precio
+const costoProm=(cantA,pcA,cantN,pcN)=>{const t=Math.max(0,cantA)+cantN;return t>0?Math.round((Math.max(0,cantA)*(pcA||0)+cantN*pcN)/t):pcN;};
+
+/* ══ INVENTARIO: cambios de stock seguros ══
+   Lee la cantidad real y solo escribe si nadie la cambió entretanto (dos vendedores a la vez
+   no pueden vender el mismo último par). Cada cambio queda en el historial (tabla movimientos_inv). */
+let kardexOk=true;
+async function logInv(row,delta,motivo){
+  if(!kardexOk||!delta||!row)return;
+  const r=await api('POST','movimientos_inv',{fecha:hoy(),hora:new Date().toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'}),usuario:S.session?.usuario||'',inv_id:row.id,ref:row.nombre,talla:row.talla,delta,stock_final:row.cant,motivo},'',true);
+  if(!r)kardexOk=false;   // la tabla aún no existe (supabase/mejoras.sql): se sigue sin historial
+}
+async function moverStock(id,delta,motivo){
+  for(let i=0;i<4;i++){
+    const a=await dbGet('inventario',`?id=eq.${id}`);
+    if(!a)return{ok:false,msg:'No se pudo leer el inventario (revisa la conexión)'};
+    if(!a[0])return{ok:false,msg:'Ese producto ya no existe en el inventario'};
+    const cur=a[0].cant||0,nuevo=cur+delta;
+    if(nuevo<0)return{ok:false,stock:cur,msg:`Stock insuficiente: quedan ${cur} de ${a[0].nombre} T${a[0].talla}`};
+    const r=await dbPatch('inventario',{cant:nuevo},`?id=eq.${id}&cant=${a[0].cant==null?'is.null':'eq.'+cur}`);
+    if(!r)return{ok:false,msg:'No se pudo actualizar el inventario'};
+    if(r[0]){const loc=S.inventario.find(x=>x.id===id);if(loc)loc.cant=nuevo;await logInv(r[0],delta,motivo);return{ok:true,row:r[0]};}
+    // otra persona cambió el stock en ese instante: se vuelve a leer y se reintenta
+  }
+  return{ok:false,msg:'El inventario cambió mientras guardabas. Intenta de nuevo'};
+}
+const buscarInv=async(ref,talla)=>await dbGet('inventario',`?nombre=eq.${encodeURIComponent(ref)}&talla=eq.${talla}&order=cant.desc`)||[];
+// Productos en o bajo su stock mínimo, con lo que ya viene en camino del proveedor
+function alertasStock(){
+  const camino=r=>(S.pedidosProv||[]).filter(p=>p.estado==='Pendiente'&&p.ref===r.nombre&&Number(p.talla)===Number(r.talla)).reduce((a,p)=>a+(p.cant||0),0);
+  return(S.inventario||[]).map(r=>({...r,camino:camino(r),min:stockMinDe(r)})).filter(r=>r.min>0&&(r.cant||0)<=r.min);
+}
 
 async function cargar(p){
   const full=['dashboard','finanzas','socios'];
@@ -409,7 +449,7 @@ async function cargar(p){
     S.inventario=inv||[];S.ventas=ven||[];S.pedidos=ped||[];S.caja=caj||[];S.comisiones=com||[];S.socios=soc||[];
     S.creditos=cre||[];S.nomina=nom||[];
     setCfg(cfg);
-  }else if(p==='inventario')S.inventario=await dbGet('inventario','?order=talla,nombre')||[];
+  }else if(p==='inventario'){const[inv,sm]=await Promise.all([dbGet('inventario','?order=talla,nombre'),dbGet('stock_minimo','?order=ref')]);S.inventario=inv||[];S.stockMin=sm||[];}
   else if(p==='vender'){S.inventario=await dbGet('inventario','?cant=gt.0&order=talla,nombre')||[];S.vTalla=null;S.vProd=null;}
   else if(p==='pedidos')S.pedidos=await dbGet('pedidos','?order=id.desc')||[];
   else if(p==='caja'){S.caja=await dbGet('caja','?order=id.desc')||[];const c=await dbGet('config','?limit=1');setCfg(c);}
@@ -734,47 +774,50 @@ async function regVenta(){
   if(!await pedirComp({tipo:'Venta',desc:`${cliente} — ${pSel.nombre} T${talla} x${cant}`,monto:total,pago}))return;
   const btn=document.getElementById('btn-venta');if(btn){btn.disabled=true;btn.textContent='Guardando...';}
   const listo=()=>{if(btn){btn.disabled=false;btn.innerHTML='<i class="ti ti-receipt"></i> Registrar venta';}};
-  // Stock real antes de descontar (otro vendedor pudo vender el mismo par)
-  const act=await dbGet('inventario',`?id=eq.${pSel.id}`);
-  const stock=act&&act[0]?act[0].cant:0;
-  if(stock<cant){listo();toast(`Stock insuficiente: quedan ${stock}`,false);goTo('vender');return;}
-  const venta=await postVenta({fecha:hoy(),vendedor:S.session.usuario,cliente,ref:pSel.nombre,talla,cant,precio_unit:pu,total,forma_pago:pago,tipo_venta:tipo,domicilio:dom,descuento:'No'},act[0].pc);
-  if(!venta){listo();toast('No se pudo guardar la venta. Revisa la conexión',false);return;}
+  // 1) descontar stock de forma segura  2) guardar venta (si falla, se devuelve el stock)  3) caja y comisión
+  const mv=await moverStock(pSel.id,-cant,`Venta a ${cliente}`);
+  if(!mv.ok){listo();toast(mv.msg,false);if(mv.stock!=null)goTo('vender');return;}
+  const venta=await postVenta({fecha:hoy(),vendedor:S.session.usuario,cliente,ref:pSel.nombre,talla,cant,precio_unit:pu,total,forma_pago:pago,tipo_venta:tipo,domicilio:dom,descuento:'No'},mv.row.pc);
+  if(!venta){await moverStock(pSel.id,cant,'Reversión: la venta no se guardó');listo();toast('No se pudo guardar la venta. El stock quedó igual',false);return;}
   const ok=await Promise.all([
-    dbPatch('inventario',{cant:stock-cant},`?id=eq.${pSel.id}`),
     dbPost('caja',{fecha:hoy(),tipo:'Venta',descripcion:`${cliente} — ${pSel.nombre} T${talla}`,monto:total,forma_pago:pago}),
-    dbPost('comisiones',{fecha:hoy(),vendedor:S.session.usuario,producto:pSel.nombre,bono:5000}),
+    dbPost('comisiones',{fecha:hoy(),vendedor:S.session.usuario,producto:pSel.nombre,bono:5000*cant}),
   ]);
-  pSel.cant=stock-cant;
   listo();
-  if(ok.some(r=>!r))toast('Venta guardada, pero falló inventario, caja o comisión. Revísalos',false);
+  if(ok.some(r=>!r))toast('Venta guardada, pero falló caja o comisión. Revísalos',false);
   const txt=`SOUTH TENNIS\n${'─'.repeat(26)}\nFecha:   ${hoy()}\nCliente: ${cliente}\nRef:     ${pSel.nombre} T${talla}\nCant:    ${cant}\nPrecio:  ${fmt(pu)}\nSubtotal:${fmt(sub)}`+(dom?`\nDomicilio:${fmt(dom)}`:'')+`\n\nTOTAL:   ${fmt(total)}\nPago:    ${pago}\n${'─'.repeat(26)}\n¡Gracias por su compra!`;
+  S.recibo=txt;
   const rc=document.getElementById('recibo');
-  if(rc)rc.innerHTML=`<div style="background:#F8F8F8;border-radius:8px;padding:.85rem;font-size:11px;white-space:pre-line;font-family:monospace;line-height:1.9;border:1px solid #E8E8E8">${txt}</div>
+  if(rc)rc.innerHTML=`<div style="background:#F8F8F8;border-radius:8px;padding:.85rem;font-size:11px;white-space:pre-line;font-family:monospace;line-height:1.9;border:1px solid #E8E8E8;color:var(--txt);text-align:left">${esc(txt)}</div>
   <div class="grid2" style="gap:8px;margin-top:8px">
-    <button class="btn btn-sm" onclick="navigator.clipboard.writeText(\`${txt.replace(/`/g,"'")}\`).then(()=>toast('Copiado'))"><i class="ti ti-copy"></i> Copiar</button>
+    <button class="btn btn-sm" onclick="navigator.clipboard?.writeText(S.recibo).then(()=>toast('Copiado'))"><i class="ti ti-copy"></i> Copiar</button>
     <button class="btn btn-r btn-sm" onclick="goTo('vender')"><i class="ti ti-plus"></i> Nueva</button>
   </div>`;
-  S.vProd=null;if(!ok.some(r=>!r))toast('Venta guardada ✓');
+  S.vProd=null;if(!ok.some(r=>!r))toast(mv.row.cant===0?`Venta guardada ✓ — ${pSel.nombre} T${talla} quedó AGOTADO`:'Venta guardada ✓');
 }
 
 /* INVENTARIO */
 function filtrarInv(){
-  const t=document.getElementById('inv-t')?.value.trim()||'';
-  const g=document.getElementById('inv-g')?.value||'';
-  const o=document.getElementById('inv-o')?.value||'';
+  const q=val('inv-q').trim().toUpperCase();
+  const t=val('inv-t').trim();
+  const g=val('inv-g'),o=val('inv-o'),e=val('inv-e');
   let rows=S.inventario;
+  if(q)rows=rows.filter(r=>String(r.nombre||'').toUpperCase().includes(q));
   // Solo filtra por stock cuando se busca una talla específica
-  if(t){rows=rows.filter(r=>r.talla===parseInt(t)&&r.cant>0);}
+  if(t)rows=rows.filter(r=>Number(r.talla)===Number(t)&&r.cant>0);
   if(g)rows=rows.filter(r=>r.genero===g);
   if(o)rows=rows.filter(r=>(r.origen||'nuevo')===o);
+  if(e==='bajo')rows=rows.filter(r=>(r.cant||0)>0&&(r.cant||0)<=stockMinDe(r));
+  if(e==='agotado')rows=rows.filter(r=>(r.cant||0)===0);
+  if(e==='disp')rows=rows.filter(r=>(r.cant||0)>0);
   const tb=document.getElementById('inv-tabla');
   if(tb)tb.innerHTML=tablaInv(rows);
   const cnt=document.getElementById('inv-cnt');
-  if(cnt)cnt.textContent=rows.reduce((a,b)=>a+b.cant,0)+' uds';
+  if(cnt)cnt.textContent=rows.reduce((a,b)=>a+(b.cant||0),0)+' uds';
 }
 function tablaInv(rows){
-  if(!rows.length)return`<div style="text-align:center;color:#bbb;padding:2rem;font-size:13px">Sin productos con stock para esa talla</div>`;
+  if(!rows.length)return`<div style="text-align:center;color:#bbb;padding:2rem;font-size:13px">Sin productos para ese filtro</div>`;
+  const inp=(id,campo,v,w)=>`<input type="number" min="0" value="${v??0}" style="width:${w}px;padding:4px;font-size:13px;border:1px solid #E8E8E8;border-radius:6px;background:#fff" onchange="updCampo(${id},'${campo}',this)">`;
   return`<div class="card" style="padding:0;overflow:hidden">
     <table class="tbl" style="table-layout:fixed">
       <thead><tr>
@@ -787,14 +830,15 @@ function tablaInv(rows){
       ${rows.map(r=>{
         const tc=r.genero==='DAMA'?'td':r.genero==='CABALLERO'?'tc':'tm';
         const ori=r.origen||'nuevo';const util=(r.precio||0)-(r.pc||0);
-        return`<tr>
-          <td style="font-weight:700;font-size:15px">T${r.talla}</td>
-          <td style="font-weight:600">${r.nombre}</td>
-          <td><span class="tag ${tc}">${r.genero}</span></td>
+        const c=r.cant||0;const bajo=c>0&&c<=stockMinDe(r);
+        return`<tr style="${c===0?'background:#FFF5F5':bajo?'background:#FFFBF0':''}">
+          <td style="font-weight:700;font-size:15px">T${esc(r.talla)}</td>
+          <td style="font-weight:600">${esc(r.nombre)}${c===0?' <span style="font-size:10px;color:var(--red)">AGOTADO</span>':bajo?' <span style="font-size:10px;color:#E65100">BAJO</span>':''}${!r.precio?' <span style="font-size:10px;color:var(--red)">SIN PRECIO</span>':''}</td>
+          <td><span class="tag ${tc}">${esc(r.genero)}</span></td>
           <td><span class="tag ${ori==='inicial'?'tag-ini':'tag-nvo'}">${ori}</span></td>
-          <td>${isAdmin()?`<input type="number" min="0" value="${r.cant}" style="width:50px;padding:4px;font-size:13px;border:1px solid #E8E8E8;border-radius:6px;background:#fff" onchange="updCant(${r.id},this.value)">`:`<b style="color:${r.cant===0?'var(--red)':'inherit'}">${r.cant}</b>`}</td>
-          <td>${fmt(r.precio)}</td>
-          ${isAdmin()?`<td>${fmt(r.pc)}</td><td style="color:${util>0?'#1F5014':'var(--red)'};font-weight:600">${fmt(util)}</td>
+          <td>${isAdmin()?inp(r.id,'cant',c,50):`<b style="color:${c===0?'var(--red)':'inherit'}">${c}</b>`}</td>
+          <td>${isAdmin()?inp(r.id,'precio',r.precio,90):fmt(r.precio)}</td>
+          ${isAdmin()?`<td>${inp(r.id,'pc',r.pc,90)}</td><td style="color:${util>0?'#1F5014':'var(--red)'};font-weight:600">${fmt(util)}</td>
           <td><button class="btn btn-sm" onclick="delProd(${r.id})" style="color:var(--red);border-color:#F5BABA;padding:4px 7px"><i class="ti ti-trash"></i></button></td>`:''}
         </tr>`;
       }).join('')}
@@ -803,29 +847,69 @@ function tablaInv(rows){
   </div>`;
 }
 function pgInv(){
-  const rowsConStock=S.inventario;
+  const disp=S.inventario.reduce((a,b)=>a+(b.cant||0),0);
   return`<div class="ph"><h2 class="pt">Inventario</h2>
-    <button class="btn btn-g btn-sm" onclick="showAddProd()"><i class="ti ti-plus"></i> Agregar</button>
-    <span id="inv-cnt" style="font-size:12px;color:#aaa;margin-left:auto">${S.inventario.filter(r=>r.cant>0).reduce((a,b)=>a+b.cant,0)} uds disponibles</span>
+    ${isAdmin()?`<button class="btn btn-g btn-sm" onclick="showAddProd()"><i class="ti ti-plus"></i> Agregar</button>`:''}
+    <button class="btn btn-sm" onclick="verKardex()"><i class="ti ti-history"></i> Movimientos</button>
+    <span id="inv-cnt" style="font-size:12px;color:#aaa;margin-left:auto">${disp} uds disponibles</span>
   </div>
+  ${isAdmin()?`<div class="met">
+    <div class="mc2"><div class="ml">Pares</div><div class="mv">${disp}</div></div>
+    <div class="mc2"><div class="ml">Valor a costo</div><div class="mv b" style="font-size:14px">${fmt(valInv(S.inventario))}</div></div>
+    <div class="mc2"><div class="ml">Valor a precio venta</div><div class="mv g" style="font-size:14px">${fmt(S.inventario.reduce((a,b)=>a+(b.cant||0)*(b.precio||0),0))}</div></div>
+  </div>`:''}
   <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:.75rem;align-items:center">
-    <div style="position:relative;flex:0 0 160px">
+    <div style="position:relative;flex:1 1 160px">
       <i class="ti ti-search" style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:#aaa;font-size:15px"></i>
-      <input id="inv-t" type="number" placeholder="Buscar talla..." style="padding-left:32px" oninput="filtrarInv()" onkeydown="if(event.key==='Enter')filtrarInv()"/>
+      <input id="inv-q" placeholder="Buscar referencia..." style="padding-left:32px" oninput="filtrarInv()"/>
     </div>
+    <input id="inv-t" type="number" placeholder="Talla" style="width:90px" oninput="filtrarInv()"/>
     <select id="inv-g" onchange="filtrarInv()" style="width:120px"><option value="">Todos</option><option>DAMA</option><option>CABALLERO</option><option>MIXTO</option></select>
     <select id="inv-o" onchange="filtrarInv()" style="width:120px"><option value="">Todo origen</option><option value="inicial">Inicial</option><option value="nuevo">Nuevo</option></select>
+    <select id="inv-e" onchange="filtrarInv()" style="width:130px"><option value="">Todo stock</option><option value="disp">Disponibles</option><option value="bajo">Stock bajo</option><option value="agotado">Agotados</option></select>
     <button class="btn btn-sm" onclick="goTo('inventario')"><i class="ti ti-refresh"></i></button>
   </div>
   <div id="addform"></div>
-  <div id="inv-tabla">${tablaInv(rowsConStock)}</div>`;
+  <div id="kardex"></div>
+  <div id="inv-tabla">${tablaInv(S.inventario)}</div>`;
 }
-async function updCant(id,val){const v=Math.max(0,parseInt(val)||0);await dbPatch('inventario',{cant:v},`?id=eq.${id}`);const p=S.inventario.find(r=>r.id===id);if(p)p.cant=v;toast('Actualizado');}
-async function delProd(id){if(!confirm('¿Eliminar?'))return;await dbDel('inventario',`?id=eq.${id}`);S.inventario=S.inventario.filter(r=>r.id!==id);goTo('inventario');}
+// Edición en la tabla (solo admin). La cantidad pasa por moverStock para quedar en el historial
+async function updCampo(id,campo,el){
+  const v=Math.max(0,num(el.value));const p=S.inventario.find(r=>r.id===id);
+  if(campo==='cant'){
+    const a=await dbGet('inventario',`?id=eq.${id}`);if(!a||!a[0]){toast('No se pudo leer el producto',false);return;}
+    const d=v-(a[0].cant||0);if(!d){el.value=v;return;}
+    const mv=await moverStock(id,d,'Ajuste manual (conteo)');
+    if(!mv.ok){toast(mv.msg,false);el.value=a[0].cant||0;return;}
+    el.value=mv.row.cant;toast(`Stock ${d>0?'+':''}${d} → ${mv.row.cant} uds`);return;
+  }
+  if(campo==='precio'&&v<=0){toast('El precio de venta debe ser mayor a 0',false);el.value=p?.precio||0;return;}
+  const r=await dbPatch('inventario',{[campo]:v},`?id=eq.${id}`);
+  if(!r){toast('No se pudo guardar',false);return;}
+  if(p)p[campo]=v;toast('Actualizado ✓');filtrarInv();
+}
+async function delProd(id){
+  const p=S.inventario.find(r=>r.id===id);if(!p)return;
+  if(!confirm(`¿Eliminar ${p.nombre} T${p.talla}?`+((p.cant||0)>0?`\n\n⚠ Todavía tiene ${p.cant} uds (${fmt((p.cant||0)*(p.pc||0))} a costo). Se perderán del inventario.`:'')))return;
+  const r=await dbDel('inventario',`?id=eq.${id}`);if(!r){toast('No se pudo eliminar',false);return;}
+  if(p.cant)await logInv({...p,cant:0},-p.cant,'Producto eliminado');
+  S.inventario=S.inventario.filter(r=>r.id!==id);toast('Eliminado');filtrarInv();
+}
+async function verKardex(){
+  const box=document.getElementById('kardex');if(!box)return;
+  if(box.innerHTML){box.innerHTML='';return;}
+  box.innerHTML='<div class="loading"><i class="ti ti-refresh spin"></i> Cargando...</div>';
+  const r=await dbGet('movimientos_inv','?order=id.desc&limit=150');
+  if(!r){box.innerHTML=`<div class="card" style="background:#FFF8E1;border-color:#FFE082;font-size:12px;color:#8D6E00">⚠ El historial de movimientos aún no está activo. Ejecuta <b>supabase/mejoras.sql</b> en Supabase → SQL Editor.</div>`;return;}
+  box.innerHTML=`<div class="card"><div class="ct">Últimos movimientos de inventario</div>${r.length?`<table class="tbl"><thead><tr><th>Fecha</th><th>Usuario</th><th>Ref</th><th>T</th><th>Mov.</th><th>Queda</th><th>Motivo</th></tr></thead><tbody>
+    ${r.map(m=>`<tr><td style="color:#aaa;font-size:12px">${esc(m.fecha)} ${esc(m.hora||'')}</td><td>${esc(m.usuario)}</td><td style="font-weight:600">${esc(m.ref)}</td><td>${esc(m.talla)}</td><td style="font-weight:700;color:${m.delta>0?'#1F5014':'var(--red)'}">${m.delta>0?'+':''}${m.delta}</td><td>${m.stock_final??'—'}</td><td style="font-size:12px">${esc(m.motivo)}</td></tr>`).join('')}
+  </tbody></table>`:'<div style="color:#bbb;font-size:13px">Sin movimientos todavía</div>'}</div>`;
+}
 function showAddProd(){document.getElementById('addform').innerHTML=`<div class="card" style="border:2px solid var(--red);margin-bottom:.75rem">
   <div class="ct">Agregar producto</div>
+  <div style="font-size:12px;color:#888;margin-bottom:8px">Si la referencia y talla ya existen, las unidades se suman al mismo producto (no se duplica).</div>
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px">
-    <div class="frow"><label>Nombre</label><input id="a-n" placeholder="Ej: SAMBA"/></div>
+    <div class="frow"><label>Nombre</label><input id="a-n" placeholder="Ej: SAMBA" list="refs-inv"/><datalist id="refs-inv">${[...new Set(S.inventario.map(r=>r.nombre))].map(n=>`<option value="${esc(n)}">`).join('')}</datalist></div>
     <div class="frow"><label>Talla</label><input id="a-t" type="number" value="40"/></div>
     <div class="frow"><label>Cantidad</label><input id="a-c" type="number" value="1" min="1"/></div>
     <div class="frow"><label>Género</label><select id="a-g"><option>DAMA</option><option>CABALLERO</option><option>MIXTO</option></select></div>
@@ -837,16 +921,32 @@ function showAddProd(){document.getElementById('addform').innerHTML=`<div class=
     <button class="btn btn-g" onclick="saveProd()"><i class="ti ti-check"></i> Guardar</button>
     <button class="btn" onclick="document.getElementById('addform').innerHTML=''">Cancelar</button>
   </div></div>`;}
-async function saveProd(){
-  const n=document.getElementById('a-n').value.trim().toUpperCase();const t=parseInt(document.getElementById('a-t').value);
-  const g=document.getElementById('a-g').value;const c=parseInt(document.getElementById('a-c').value)||0;
-  const pv=parseInt(document.getElementById('a-pv').value)||0;const pc=parseInt(document.getElementById('a-pc').value)||0;
-  const ori=document.getElementById('a-ori').value;
-  if(!n||!t){toast('Completa nombre y talla',false);return;}
-  const res=await dbPost('inventario',{nombre:n,talla:t,genero:g,cant:c,precio:pv,pc,origen:ori});
-  if(res&&res[0])S.inventario.push(res[0]);
-  toast('Guardado ✓');document.getElementById('addform').innerHTML='';goTo('inventario');
-}
+// Costo promedio ponderado al sumar unidades compradas a otro precio
+async function saveProd(){return conBloqueo('prod',async()=>{
+  const n=val('a-n').trim().toUpperCase().replace(/\s+/g,' ');const t=Number(val('a-t'));
+  const g=val('a-g');const c=num(val('a-c'));
+  const pv=num(val('a-pv'));const pc=num(val('a-pc'));
+  const ori=val('a-ori');
+  if(!n||!t||t<=0){toast('Completa nombre y talla',false);return;}
+  if(c<0){toast('La cantidad no puede ser negativa',false);return;}
+  if(pv<=0){toast('Ingresa el precio de venta',false);return;}
+  if(pc>0&&pv<pc&&!confirm(`⚠ El precio de venta (${fmt(pv)}) es menor al de compra (${fmt(pc)}). ¿Guardar igual?`))return;
+  const ex=await buscarInv(n,t);
+  if(ex.length){
+    const e=ex[0];
+    if(!confirm(`${n} T${t} ya existe con ${e.cant||0} uds.\n\n¿Sumar ${c} uds a ese producto y actualizar precios?`))return;
+    const nuevoPc=pc>0&&c>0?costoProm(e.cant||0,e.pc,c,pc):(e.pc||pc);
+    if(c>0){const mv=await moverStock(e.id,c,'Ingreso manual');if(!mv.ok){toast(mv.msg,false);return;}}
+    await dbPatch('inventario',{precio:pv,pc:nuevoPc},`?id=eq.${e.id}`);
+    toast(`Sumado ✓ ${n} T${t}`);goTo('inventario');return;
+  }
+  // toma la foto de otra talla de la misma referencia para que se vea en el catálogo
+  const her=S.inventario.find(r=>r.nombre===n&&r.foto_url);
+  const res=await dbPost('inventario',{nombre:n,talla:t,genero:g,cant:c,precio:pv,pc,origen:ori,...(her?{foto_url:her.foto_url}:{})});
+  if(!res||!res[0]){toast('No se pudo guardar el producto',false);return;}
+  if(c)await logInv(res[0],c,'Producto nuevo');
+  toast('Guardado ✓');goTo('inventario');
+});}
 
 /* PEDIDOS */
 function pgPedidos(){
@@ -911,7 +1011,7 @@ async function completarP(id){
   const inv=await dbGet('inventario',`?nombre=eq.${encodeURIComponent(p.referencia)}&talla=eq.${p.talla}`);
   const item=inv&&inv[0];let costo=item?item.pc||0:0;
   if(item&&item.cant>0&&confirm(`¿El par sale del inventario?\n(Hay ${item.cant} de ${p.referencia} T${p.talla})\n\nAceptar = descontar 1 · Cancelar = llegó aparte`)){
-    await dbPatch('inventario',{cant:item.cant-1},`?id=eq.${item.id}`);
+    const mv=await moverStock(item.id,-1,`Entrega pedido ${p.cliente}`);if(!mv.ok)toast(mv.msg,false);
   }else if(!costo){
     costo=parseInt(prompt(`¿Cuánto costó el par ${p.referencia} T${p.talla}? (para calcular la utilidad)`,''))||0;
   }
@@ -933,8 +1033,9 @@ async function eliminarP(id){
 /* CAJA */
 function pgCaja(){
   const{ef,ban,total}=calcSaldos();
-  const ing=S.caja.filter(r=>!esSalida(r)).reduce((a,b)=>a+(b.monto||0),0);
-  const gas=S.caja.filter(esSalida).reduce((a,b)=>a+(b.monto||0),0);
+  const movs=S.caja.filter(r=>!esTraslado(r));
+  const ing=movs.filter(r=>!esSalida(r)).reduce((a,b)=>a+(b.monto||0),0);
+  const gas=movs.filter(esSalida).reduce((a,b)=>a+(b.monto||0),0);
   return`<div class="ph"><h2 class="pt"><i class="ti ti-report-money" style="color:var(--red)"></i> Caja</h2></div>
   ${cajaLive()}
   <div class="met">
@@ -944,17 +1045,25 @@ function pgCaja(){
   </div>
   ${isAdmin()?`<div class="card"><div class="ct">Registrar movimiento</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px">
-      <div class="frow"><label>Tipo</label><select id="c-tipo">${TIPOS_MOV.map(t=>`<option>${t}</option>`).join('')}</select></div>
+      <div class="frow"><label>Tipo</label><select id="c-tipo">${TIPOS_MOV.map(t=>`<option>${t}</option>`).join('')}<option value="Traslado">Traslado efectivo ↔ banco</option></select></div>
       <div class="frow"><label>Descripción</label><input id="c-desc" placeholder="Descripción"/></div>
       <div class="frow"><label>Monto</label><input id="c-mont" type="number" value="0"/></div>
       <div class="frow"><label>Forma de pago</label><select id="c-pago"><option>Efectivo</option><option>Transferencia</option><option>Bancolombia</option></select></div>
     </div>
-    <div style="font-size:11px;color:#aaa;margin-bottom:.6rem"><b>Gasto</b> baja la utilidad. <b>Retiro socio</b>, <b>Pago proveedor</b> (abono a la deuda con el proveedor, la descuenta sola) y <b>Devolución</b> sacan plata de caja pero no son gasto del negocio.</div>
+    <div style="font-size:11px;color:#aaa;margin-bottom:.6rem"><b>Gasto</b> baja la utilidad. <b>Retiro socio</b>, <b>Pago proveedor</b> (abono a la deuda con el proveedor, la descuenta sola) y <b>Devolución</b> sacan plata de caja pero no son gasto del negocio. <b>Traslado</b> (ej. consignar efectivo al banco): la forma de pago es de dónde SALE la plata; no cuenta como ingreso ni gasto.</div>
     <button class="btn btn-r" onclick="regMov()"><i class="ti ti-plus"></i> Registrar</button>
+  </div>
+  <div class="card" style="border:2px solid #2196F3"><div class="ct" style="color:#0C447C">Cuadre de caja (arqueo)</div>
+    <div style="font-size:12px;color:#888;margin-bottom:8px">Cuenta la plata real. El sistema registra la diferencia como sobrante o faltante para que el saldo quede exacto.</div>
+    <div class="grid2">
+      <div class="frow"><label>Efectivo contado</label><input id="aq-ef" type="number" placeholder="Sistema: ${ef}"/></div>
+      <div class="frow"><label>Saldo real en banco</label><input id="aq-ban" type="number" placeholder="Sistema: ${ban}"/></div>
+    </div>
+    <button class="btn btn-b" onclick="arqueo()"><i class="ti ti-scale"></i> Cuadrar</button>
   </div>`:''}
   ${S.caja.length===0?`<div class="card" style="text-align:center;color:#bbb;padding:2rem">Sin movimientos</div>`:`
   <div class="card" style="padding:0;overflow:hidden"><table class="tbl"><thead><tr><th>Fecha</th><th>Tipo</th><th>Descripción</th><th>Monto</th><th>Pago</th>${isAdmin()?'<th></th>':''}</tr></thead><tbody>
-  ${S.caja.map(r=>`<tr><td style="color:#bbb;font-size:12px">${r.fecha}</td><td>${r.tipo}</td><td>${r.descripcion}</td>
+  ${S.caja.map(r=>`<tr><td style="color:#bbb;font-size:12px">${esc(r.fecha)}</td><td>${esc(r.tipo)}</td><td>${esc(r.descripcion)}</td>
   <td style="font-weight:700;color:${esSalida(r)?'var(--red)':'#1F5014'}">${esSalida(r)?'−':'+'}${fmt(r.monto)}</td>
   <td><span class="tag tm">${r.forma_pago||'—'}</span>${enBase(r,S.cfg)?' <span class="tag tag-ini" title="Ya incluido en el saldo base">en base</span>':''}</td>
   ${isAdmin()?`<td><button class="btn btn-sm" onclick="delMov(${r.id})" style="color:var(--red);border-color:#F5BABA;padding:4px 7px"><i class="ti ti-trash"></i></button></td>`:''}
@@ -965,6 +1074,14 @@ async function regMov(){
   if(!isAdmin())return;
   const tipo=document.getElementById('c-tipo').value;const desc=document.getElementById('c-desc').value.trim()||'Sin descripción';const monto=parseInt(document.getElementById('c-mont').value)||0;const pago=document.getElementById('c-pago').value;
   if(monto<=0){toast('Monto inválido',false);return;}
+  if(tipo==='Traslado'){
+    const destino=pago==='Efectivo'?'Bancolombia':'Efectivo';
+    if(!confirm(`¿Trasladar ${fmt(monto)} de ${pago==='Efectivo'?'efectivo a banco':'banco a efectivo'}?`))return;
+    const a=await dbPost('caja',{fecha:hoy(),tipo:'Traslado salida',descripcion:desc,monto,forma_pago:pago});
+    const b=a&&await dbPost('caja',{fecha:hoy(),tipo:'Traslado entrada',descripcion:desc,monto,forma_pago:destino});
+    if(a&&!b)await dbDel('caja',`?id=eq.${a[0].id}`);
+    if(b)toast('Traslado registrado ✓');goTo('caja');return;
+  }
   if(esSalida({tipo})){const{ef,ban}=calcSaldos();const hay=pago==='Efectivo'?ef:ban;if(monto>hay&&!confirm(`Según el sistema solo hay ${fmt(hay)} en ${pago==='Efectivo'?'efectivo':'banco'}.\n¿Registrar la salida de ${fmt(monto)} de todas formas?`))return;}
   if(!await pedirComp({tipo,desc,monto,pago}))return;
   if(!await dbPost('caja',{fecha:hoy(),tipo,descripcion:desc,monto,forma_pago:pago}))return;
@@ -974,7 +1091,31 @@ async function regMov(){
   }
   toast('Guardado ✓');goTo('caja');
 }
-async function delMov(id){if(!confirm('¿Eliminar?'))return;await dbDel('caja',`?id=eq.${id}`);toast('Eliminado');goTo('caja');}
+async function delMov(id){
+  const m=S.caja.find(r=>r.id===id);if(!m)return;
+  if(!confirm(`¿Eliminar ${m.tipo} de ${fmt(m.monto)}?`+(m.tipo==='Venta'?'\n\n⚠ Esto NO anula la venta ni devuelve el stock. Para anular una venta, hazlo desde Finanzas.':'')+(esTraslado(m)?'\n\nSe elimina también la otra mitad del traslado.':'')))return;
+  if(!await dbDel('caja',`?id=eq.${id}`))return;
+  if(esTraslado(m)){
+    const otro=m.tipo==='Traslado salida'?'Traslado entrada':'Traslado salida';
+    const o=await dbGet('caja',`?tipo=eq.${encodeURIComponent(otro)}&fecha=eq.${encodeURIComponent(m.fecha)}&monto=eq.${m.monto}&descripcion=eq.${encodeURIComponent(m.descripcion||'')}&order=id.desc&limit=1`);
+    if(o&&o[0])await dbDel('caja',`?id=eq.${o[0].id}`);
+  }
+  toast('Eliminado');goTo('caja');
+}
+// Cuadre: compara lo contado con lo que dice el sistema y registra la diferencia
+async function arqueo(){return conBloqueo('arqueo',async()=>{
+  const fef=val('aq-ef').trim(),fban=val('aq-ban').trim();
+  if(!fef&&!fban){toast('Escribe el efectivo contado y/o el saldo del banco',false);return;}
+  const caj=await dbGet('caja','?order=id.desc');if(!caj){toast('No se pudo leer la caja',false);return;}
+  S.caja=caj;await cfgActual();
+  const s=calcSaldos();const movs=[];
+  if(fef){const d=num(fef)-s.ef;if(d)movs.push({tipo:d>0?'Ajuste sobrante':'Ajuste faltante',monto:Math.abs(d),forma_pago:'Efectivo',descripcion:`Cuadre efectivo: sistema ${fmt(s.ef)} / contado ${fmt(num(fef))}`});}
+  if(fban){const d=num(fban)-s.ban;if(d)movs.push({tipo:d>0?'Ajuste sobrante':'Ajuste faltante',monto:Math.abs(d),forma_pago:'Bancolombia',descripcion:`Cuadre banco: sistema ${fmt(s.ban)} / real ${fmt(num(fban))}`});}
+  if(!movs.length){toast('La caja cuadra exacto ✓');return;}
+  if(!confirm('Diferencias:\n\n'+movs.map(m=>`${m.tipo==='Ajuste sobrante'?'Sobran':'Faltan'} ${fmt(m.monto)} en ${m.forma_pago==='Efectivo'?'efectivo':'banco'}`).join('\n')+'\n\n¿Registrar los ajustes?'))return;
+  if(await dbPost('caja',movs.map(m=>({fecha:hoy(),...m}))))toast('Caja cuadrada ✓');
+  goTo('caja');
+});}
 
 /* FINANZAS */
 function pgFin(){
@@ -1059,14 +1200,16 @@ async function delVenta(id){
   if(v.tipo_venta==='Pedido'){
     if(!confirm(`¿Quitar la venta del pedido de ${v.cliente} (${v.ref} T${v.talla})?\n\nLos abonos siguen en caja. Si devolviste la plata, regístralo en Caja como "Devolución".`))return;
     if(confirm('¿El zapato regresó a la tienda? (Aceptar = vuelve al inventario)')){
-      const rows=await dbGet('inventario',`?nombre=eq.${encodeURIComponent(v.ref)}&talla=eq.${v.talla}`);
-      if(rows&&rows[0])await dbPatch('inventario',{cant:rows[0].cant+(v.cant||1)},`?id=eq.${rows[0].id}`);
+      const rows=await buscarInv(v.ref,v.talla);
+      if(rows[0]){const mv=await moverStock(rows[0].id,v.cant||1,`Venta de pedido anulada (${v.cliente})`);if(!mv.ok)toast(mv.msg,false);}
+      else toast(`${v.ref} T${v.talla} no está en inventario: agrégalo a mano`,false);
     }
     await dbDel('ventas',`?id=eq.${id}`);toast('Venta quitada');goTo('finanzas');return;
   }
   if(!confirm(`¿Eliminar la venta de ${v.ref} T${v.talla} a ${v.cliente}?\n\nSe devuelve el stock y se quitan ${fmt(v.total)} de caja.`))return;
-  const rows=await dbGet('inventario',`?nombre=eq.${encodeURIComponent(v.ref)}&talla=eq.${v.talla}`);
-  if(rows&&rows[0])await dbPatch('inventario',{cant:rows[0].cant+(v.cant||0)},`?id=eq.${rows[0].id}`);
+  const rows=await buscarInv(v.ref,v.talla);
+  if(rows[0]){const mv=await moverStock(rows[0].id,v.cant||0,`Venta anulada (${v.cliente})`);if(!mv.ok)toast(mv.msg+' — ajusta el stock a mano',false);}
+  else toast(`${v.ref} T${v.talla} no está en inventario: agrégalo a mano`,false);
   const mov=await dbGet('caja',`?tipo=eq.Venta&fecha=eq.${encodeURIComponent(v.fecha)}&monto=eq.${v.total}&descripcion=eq.${encodeURIComponent(`${v.cliente} — ${v.ref} T${v.talla}`)}&limit=1`);
   const enCaja=!!(mov&&mov[0]);
   if(enCaja)await dbDel('caja',`?id=eq.${mov[0].id}`);
@@ -1346,6 +1489,7 @@ function pgCreditos(){
     <div style="display:flex;gap:6px;flex-wrap:wrap">
       <button class="btn btn-g btn-sm" onclick="abonarCredito(${c.id},${c.saldo},${c.valor_cuota})"><i class="ti ti-cash"></i> Pagar cuota</button>
       <button class="btn btn-sm" onclick="abonarCreditoLibre(${c.id},${c.saldo})" style="color:#0C447C;border-color:#B5D4F4"><i class="ti ti-cash"></i> Abono libre</button>
+      ${c.telefono?`<a class="btn btn-sm btn-wa" target="_blank" href="https://wa.me/57${String(c.telefono).replace(/\D/g,'').replace(/^57(?=\d{10}$)/,'')}?text=${encodeURIComponent(`Hola ${c.cliente}, te recordamos tu saldo pendiente en South Tennis: ${fmt(c.saldo)} (cuota ${fmt(c.valor_cuota)}). ¡Gracias!`)}"><i class="ti ti-brand-whatsapp"></i> Recordar</a>`:''}
       ${isAdmin()?`<button class="btn btn-sm btn-g" onclick="cerrarCredito(${c.id})"><i class="ti ti-check"></i> Cerrar</button><button class="btn btn-sm" onclick="delCredito(${c.id})" style="color:var(--red);border-color:#F5BABA"><i class="ti ti-trash"></i></button>`:''}
     </div>
   </div>`).join('')}</div>`:'<div class="card" style="text-align:center;color:#bbb;padding:2rem">Sin créditos pendientes</div>'}
@@ -1395,9 +1539,11 @@ async function regCredito(){
   const saldo=Math.max(0,precio-abono);
   const vcuota=Math.ceil(saldo/cuotas);
   if(abono>0&&!await pedirComp({tipo:'Cobro Crédito',desc:`Abono inicial ${cli} — ${ref}`,monto:abono,pago}))return;
-  const res=await dbPost('creditos',{fecha:hoy(),vendedor:S.session.usuario,cliente:cli,telefono:tel,ref,talla,cant,precio_total:precio,abono_inicial:abono,saldo,num_cuotas:cuotas,valor_cuota:vcuota,cuotas_pagadas:0,forma_pago:pago,notas,estado:'Pendiente'});
-  if(!res){toast('No se pudo guardar el crédito',false);return;}
-  await dbPatch('inventario',{cant:stock-cant},`?id=eq.${prod.id}`);
+  // primero el stock (seguro); si el crédito no se guarda, el stock se devuelve
+  const mv=await moverStock(prod.id,-cant,`Crédito a ${cli}`);
+  if(!mv.ok){toast(mv.msg,false);goTo('creditos');return;}
+  const res=await dbPost('creditos',{fecha:hoy(),vendedor:S.session.usuario,cliente:cli,telefono:tel,ref,talla,cant,precio_total:precio,abono_inicial:abono,saldo,num_cuotas:cuotas,valor_cuota:vcuota,cuotas_pagadas:0,forma_pago:pago,notas,estado:saldo>0?'Pendiente':'Pagado'});
+  if(!res){await moverStock(prod.id,cant,'Reversión: el crédito no se guardó');toast('No se pudo guardar el crédito. El stock quedó igual',false);return;}
   // También es una venta: cuenta para ingresos, pares vendidos y utilidad del mes.
   // La plata entra a caja solo a medida que el cliente abona.
   await postVenta({fecha:hoy(),vendedor:S.session.usuario,cliente:cli,ref,talla,cant,precio_unit:Math.round(precio/cant),total:precio,forma_pago:'Crédito',tipo_venta:'Crédito',domicilio:0,descuento:'No'},act[0].pc);
@@ -1448,8 +1594,8 @@ async function delCredito(id){
   if(!confirm(`¿Eliminar el crédito de ${c.cliente}?`))return;
   // Los créditos anteriores a este cambio no descontaron stock: por eso se pregunta
   if(confirm(`¿Devolver ${c.cant||1} ud(s) de ${c.ref} T${c.talla} al inventario?\n\nAcepta solo si el zapato regresó a la tienda.`)){
-    const rows=await dbGet('inventario',`?nombre=eq.${encodeURIComponent(c.ref)}&talla=eq.${c.talla}`);
-    if(rows&&rows[0])await dbPatch('inventario',{cant:rows[0].cant+(c.cant||1)},`?id=eq.${rows[0].id}`);
+    const rows=await buscarInv(c.ref,c.talla);
+    if(rows[0]){const mv=await moverStock(rows[0].id,c.cant||1,`Devolución crédito ${c.cliente}`);if(!mv.ok)toast(mv.msg,false);}
     else toast(`${c.ref} T${c.talla} no está en inventario; agrégalo a mano`,false);
   }
   // Si se anula un crédito pendiente, quitar la venta a crédito que se registró con él (si es del mes actual).
@@ -1461,10 +1607,7 @@ async function delCredito(id){
 
 /* ══ PEDIDOS PROVEEDOR ══ */
 function pgPedidosProv(){
-  const alertas=(S.inventario||[]).filter(r=>{
-    const min=(S.stockMin||[]).find(m=>m.ref===r.nombre&&m.talla===r.talla);
-    return min?r.cant<=min.stock_minimo:r.cant<=1;
-  });
+  const alertas=alertasStock();
   const pend=(S.pedidosProv||[]).filter(p=>p.estado==='Pendiente');
   const rec=(S.pedidosProv||[]).filter(p=>p.estado==='Recibido');
   return`<div class="ph"><h2 class="pt"><i class="ti ti-truck" style="color:var(--red)"></i> Pedidos Proveedor</h2></div>
@@ -1472,8 +1615,8 @@ function pgPedidosProv(){
     <div style="font-weight:700;color:#E65100;margin-bottom:8px;font-size:13px">⚠ ${alertas.length} producto${alertas.length>1?'s':''} con stock bajo</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:6px">
     ${alertas.map(r=>`<div style="background:#fff;border-radius:8px;padding:8px 10px;display:flex;justify-content:space-between;align-items:center;font-size:13px">
-      <span><b>${r.nombre}</b> T${r.talla} <span style="font-size:11px;color:#aaa">${r.genero}</span></span>
-      <span style="font-weight:700;color:${r.cant===0?'var(--red)':'#E65100'}">${r.cant} uds</span>
+      <span><b>${esc(r.nombre)}</b> T${r.talla} <span style="font-size:11px;color:#aaa">${esc(r.genero)}</span>${r.camino?` <span style="font-size:11px;color:#0C447C">· ${r.camino} en camino</span>`:''}</span>
+      <span style="font-weight:700;color:${(r.cant||0)===0?'var(--red)':'#E65100'}">${r.cant||0} uds</span>
     </div>`).join('')}
     </div>
     <button class="btn btn-sm" style="margin-top:8px;color:#E65100;border-color:#FFB74D" onclick="autoOrden()"><i class="ti ti-wand"></i> Crear orden automática</button>
@@ -1541,7 +1684,8 @@ async function regPedidoProv(){
   toast('Pedido registrado ✓');goTo('pedidos-proveedor');
 }
 async function recibirPedidoProv(id){
-  const p=(S.pedidosProv||[]).find(x=>x.id===id);if(!p)return;
+  const f=await dbGet('pedidos_proveedor',`?id=eq.${id}`);const p=f&&f[0];
+  if(!p||p.estado!=='Pendiente'){toast('Este pedido ya fue recibido',false);goTo('pedidos-proveedor');return;}
   if(!confirm(`¿Marcar recibido?\nSe agregarán ${p.cant} uds de ${p.ref} T${p.talla} al inventario.`))return;
   const exist=await dbGet('inventario',`?nombre=eq.${encodeURIComponent(p.ref)}&talla=eq.${p.talla}`);
   if(!exist){toast('No se pudo leer el inventario',false);return;}
@@ -1562,17 +1706,24 @@ async function recibirPedidoProv(id){
   if(!pago)return;
   const desc=`Compra: ${p.ref} T${p.talla} x${p.cant}`;
   if(pago!==CRED&&!await pedirComp({tipo:'Gasto',desc,monto:total,pago}))return;
+  // Se marca recibido solo si sigue pendiente: dos personas no pueden sumar el mismo pedido dos veces
+  const claim=await dbPatch('pedidos_proveedor',{estado:'Recibido',precio_compra:pcU,total},`?id=eq.${id}&estado=eq.Pendiente`);
+  if(!claim)return;
+  if(!claim.length){toast('Otra persona ya recibió este pedido',false);goTo('pedidos-proveedor');return;}
   let okInv;
   if(exist[0]){
-    // Costo promedio ponderado entre lo que había y lo que llega
-    const e=exist[0],tot=e.cant+p.cant;
-    const pc=tot>0?Math.round(((e.pc||pcU)*e.cant+pcU*p.cant)/tot):pcU;
-    okInv=await dbPatch('inventario',{cant:tot,pc},`?id=eq.${e.id}`);
+    // Costo promedio ponderado entre lo que había y lo que llega; la cantidad se suma de forma segura
+    const e=exist[0];
+    const pc=costoProm(e.cant||0,e.pc||pcU,p.cant,pcU);
+    const mv=await moverStock(e.id,p.cant,`Compra a proveedor${p.proveedor?' ('+p.proveedor+')':''}`);
+    okInv=mv.ok&&await dbPatch('inventario',{pc},`?id=eq.${e.id}`);
+    if(!mv.ok)toast(mv.msg,false);
   }else{
-    okInv=await dbPost('inventario',{nombre:p.ref,talla:p.talla,genero:p.genero||'MIXTO',cant:p.cant,precio:pv,pc:pcU,origen:'nuevo'});
+    const her=(S.inventario||[]).find(r=>r.nombre===p.ref&&r.foto_url);
+    okInv=await dbPost('inventario',{nombre:p.ref,talla:p.talla,genero:p.genero||'MIXTO',cant:p.cant,precio:pv,pc:pcU,origen:'nuevo',...(her?{foto_url:her.foto_url}:{})});
+    if(okInv&&okInv[0])await logInv(okInv[0],p.cant,'Compra a proveedor (producto nuevo)');
   }
-  if(!okInv)return;
-  await dbPatch('pedidos_proveedor',{estado:'Recibido',precio_compra:pcU,total},`?id=eq.${id}`);
+  if(!okInv){await dbPatch('pedidos_proveedor',{estado:'Pendiente'},`?id=eq.${id}`);toast('No se pudo actualizar el inventario; el pedido sigue pendiente',false);return;}
   if(pago===CRED){
     const c=await cfgActual();
     if(c){const d=(c.deuda_proveedor||0)+total;await dbPatch('config',{deuda_proveedor:d},`?id=eq.${c.id}`);S.cfg.deuda_proveedor=d;}
@@ -1591,25 +1742,24 @@ function showAddMin(){document.getElementById('min-form').innerHTML=`<div class=
   <button class="btn btn-g btn-sm" onclick="saveMin()"><i class="ti ti-check"></i></button>
 </div>`;}
 async function saveMin(){
-  const ref=document.getElementById('mn-ref').value.trim().toUpperCase();
-  const t=parseInt(document.getElementById('mn-t').value)||0;
-  const m=parseInt(document.getElementById('mn-m').value)||1;
+  const ref=val('mn-ref').trim().toUpperCase().replace(/\s+/g,' ');
+  const t=Number(val('mn-t'));
+  const m=Math.max(0,num(val('mn-m')));
   if(!ref||!t){toast('Completa referencia y talla',false);return;}
-  await dbPost('stock_minimo',{ref,talla:t,genero:'',stock_minimo:m});
-  toast('Guardado ✓');goTo('pedidos-proveedor');
+  // si ya hay un mínimo para esa referencia y talla, se actualiza en vez de duplicarlo
+  const ex=(S.stockMin||[]).find(x=>x.ref===ref&&Number(x.talla)===t);
+  const r=ex?await dbPatch('stock_minimo',{stock_minimo:m},`?id=eq.${ex.id}`):await dbPost('stock_minimo',{ref,talla:t,genero:'',stock_minimo:m});
+  if(r){toast('Guardado ✓');goTo('pedidos-proveedor');}
 }
 async function delMin(id){if(!confirm('¿Eliminar?'))return;await dbDel('stock_minimo',`?id=eq.${id}`);toast('Eliminado');goTo('pedidos-proveedor');}
-async function autoOrden(){
-  const alertas=(S.inventario||[]).filter(r=>{const min=(S.stockMin||[]).find(m=>m.ref===r.nombre&&m.talla===r.talla);return min?r.cant<=min.stock_minimo:r.cant<=1;});
-  if(!alertas.length){toast('Sin productos para pedir',false);return;}
-  if(!confirm(`¿Crear ${alertas.length} pedido(s) automático(s)?`))return;
-  for(const r of alertas){
-    const min=(S.stockMin||[]).find(m=>m.ref===r.nombre&&m.talla===r.talla);
-    const cantPedir=min?Math.max(1,min.stock_minimo*2-r.cant):3;
-    await dbPost('pedidos_proveedor',{fecha:hoy(),proveedor:'Por definir',ref:r.nombre,talla:r.talla,genero:r.genero,cant:cantPedir,precio_compra:r.pc||0,total:cantPedir*(r.pc||0),estado:'Pendiente',fecha_entrega:'Por confirmar',notas:'Generado automáticamente'});
-  }
-  toast(`${alertas.length} pedido(s) creados ✓`);goTo('pedidos-proveedor');
-}
+// Pide lo necesario para llegar al doble del mínimo, sin volver a pedir lo que ya viene en camino
+async function autoOrden(){return conBloqueo('auto',async()=>{
+  const lista=alertasStock().map(r=>({...r,pedir:Math.max(0,r.min*2-(r.cant||0)-r.camino)})).filter(r=>r.pedir>0);
+  if(!lista.length){toast('Todo lo que falta ya está pedido',false);return;}
+  if(!confirm(`¿Crear ${lista.length} pedido(s) automático(s)?\n\n`+lista.slice(0,15).map(r=>`${r.nombre} T${r.talla}: ${r.pedir} uds`).join('\n')+(lista.length>15?'\n...':'')))return;
+  const r=await dbPost('pedidos_proveedor',lista.map(x=>({fecha:hoy(),proveedor:'Por definir',ref:x.nombre,talla:x.talla,genero:x.genero,cant:x.pedir,precio_compra:x.pc||0,total:x.pedir*(x.pc||0),estado:'Pendiente',fecha_entrega:'Por confirmar',notas:'Generado automáticamente'})));
+  if(r)toast(`${lista.length} pedido(s) creados ✓`);goTo('pedidos-proveedor');
+});}
 
 /* ══ NÓMINA ══ */
 function pgNomina(){
