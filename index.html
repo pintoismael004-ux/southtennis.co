@@ -330,20 +330,39 @@ function parseFecha(f){
 // Fecha local yyyy-mm-dd (toISOString usa hora UTC: después de las 7 pm en Colombia daba el día siguiente)
 const isoLocal=(d=new Date())=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 const ayerISO=()=>{const d=new Date();d.setDate(d.getDate()-1);return isoLocal(d);};
-// El saldo base incluye los movimientos de su fecha; solo se suman los de días posteriores
+// ¿Este movimiento ya está incluido en el saldo base?
+// Si el saldo base se guardó con "saldo_hasta_id" (columna nueva), cuenta desde ESE momento: lo registrado después sí se suma.
+// Si no, se usa la fecha: el saldo base incluye todo su día y solo se suman los días posteriores.
+function enBase(r,cfg){
+  if(cfg.saldo_hasta_id!=null)return r.id<=cfg.saldo_hasta_id;
+  const fechaBase=cfg.fecha_saldo?parseFecha(cfg.fecha_saldo):null;
+  if(!fechaBase)return false;
+  const fechaMov=parseFecha(r.fecha);
+  return!!fechaMov&&fechaMov<=fechaBase;
+}
 function saldoDe(caja,cfg){
   let ef=cfg.saldo_efectivo||0,ban=cfg.saldo_banco||0;
-  const fechaBase=cfg.fecha_saldo?parseFecha(cfg.fecha_saldo):null;
   (caja||[]).forEach(r=>{
-    if(fechaBase){
-      const fechaMov=parseFecha(r.fecha);
-      if(fechaMov&&fechaMov<=fechaBase)return;
-    }
+    if(enBase(r,cfg))return;
     const fp=r.forma_pago||'Efectivo';const add=!esSalida(r);
     if(fp==='Efectivo')ef+=add?r.monto:-r.monto;else ban+=add?r.monto:-r.monto;
   });
   return{ef,ban,total:ef+ban};
 }
+// Guarda el saldo base. hastaId = último movimiento de caja que ya está incluido en ese saldo.
+// Si la columna saldo_hasta_id aún no existe en Supabase, guarda solo la fecha (como antes).
+let sinHastaId=false;
+async function guardarBase(cfgId,base,hastaId){
+  if(!sinHastaId){
+    const r=await api('PATCH','config',{...base,saldo_hasta_id:hastaId},`?id=eq.${cfgId}`,true);
+    if(r){Object.assign(S.cfg,base,{saldo_hasta_id:hastaId});return true;}
+    sinHastaId=true;
+  }
+  const r=await dbPatch('config',base,`?id=eq.${cfgId}`);
+  if(r)Object.assign(S.cfg,base);
+  return!!r;
+}
+const ultimoIdCaja=async()=>{const r=await dbGet('caja','?select=id&order=id.desc&limit=1');return r?(r[0]?r[0].id:0):null;};
 const calcSaldos=()=>saldoDe(S.caja,S.cfg);
 // Las compras de mercancía salen de caja como "Gasto", pero no son gasto operativo:
 // su costo ya se descuenta como costo de lo vendido (si no, se restaba dos veces)
@@ -534,6 +553,7 @@ function cajaLive(){
       <div class="cli"><div class="cll">Total</div><div class="clv" style="color:#fff" id="ltot">${fmt(total)}</div></div>
     </div>
     ${!S.cfg.fecha_saldo?`<div style="margin-top:8px;font-size:11px;color:#f59e0b">⚠ Define tu saldo base en Ajustes</div>`:''}
+    ${(()=>{const n=S.caja.filter(r=>enBase(r,S.cfg)).length;return n?`<div style="margin-top:8px;font-size:11px;color:#f59e0b">ⓘ ${n} movimiento(s) de la lista ya están dentro del saldo base y no se vuelven a sumar (marcados "en base"). Si no estaban incluidos, corrige el saldo base en Ajustes.</div>`:'';})()}
   </div>`;}
 
 /* TAREAS DIARIAS */
@@ -936,7 +956,7 @@ function pgCaja(){
   <div class="card" style="padding:0;overflow:hidden"><table class="tbl"><thead><tr><th>Fecha</th><th>Tipo</th><th>Descripción</th><th>Monto</th><th>Pago</th>${isAdmin()?'<th></th>':''}</tr></thead><tbody>
   ${S.caja.map(r=>`<tr><td style="color:#bbb;font-size:12px">${r.fecha}</td><td>${r.tipo}</td><td>${r.descripcion}</td>
   <td style="font-weight:700;color:${esSalida(r)?'var(--red)':'#1F5014'}">${esSalida(r)?'−':'+'}${fmt(r.monto)}</td>
-  <td><span class="tag tm">${r.forma_pago||'—'}</span></td>
+  <td><span class="tag tm">${r.forma_pago||'—'}</span>${enBase(r,S.cfg)?' <span class="tag tag-ini" title="Ya incluido en el saldo base">en base</span>':''}</td>
   ${isAdmin()?`<td><button class="btn btn-sm" onclick="delMov(${r.id})" style="color:var(--red);border-color:#F5BABA;padding:4px 7px"><i class="ti ti-trash"></i></button></td>`:''}
   </tr>`).join('')}
   </tbody></table></div>`}`;
@@ -1169,7 +1189,7 @@ function pgAjustes(){return`<div class="ph"><h2 class="pt"><i class="ti ti-setti
     <button class="btn btn-g" onclick="saveConfig()"><i class="ti ti-check"></i> Guardar</button>
   </div>
   <div class="card" style="border:2px solid #2196F3"><div class="ct" style="color:#0C447C">💰 Saldo base de caja</div>
-    <div style="font-size:13px;color:#888;margin-bottom:.75rem">Define el dinero que tienes al <b>final</b> del día que elijas (con las ventas y gastos de ese día ya incluidos). El sistema suma solo los movimientos de los días siguientes.</div>
+    <div style="font-size:13px;color:#888;margin-bottom:.75rem">Cuenta la plata que tienes <b>ahora mismo</b> en efectivo y en banco, y deja la fecha de hoy: el sistema sumará todo lo que se registre <b>desde este momento</b>.<br>Si eliges un día anterior, pon lo que tenías al <b>final</b> de ese día: se suman los movimientos de los días siguientes.</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px">
       <div class="frow"><label>Efectivo hoy</label><input id="sef" type="number" value="${S.cfg.saldo_efectivo||0}"/></div>
       <div class="frow"><label>En banco hoy</label><input id="sban" type="number" value="${S.cfg.saldo_banco||0}"/></div>
@@ -1186,7 +1206,18 @@ function pgAjustes(){return`<div class="ph"><h2 class="pt"><i class="ti ti-setti
     </div>
   </div>`;}
 async function saveConfig(){const data={fecha_corte:document.getElementById('fc').value,ganancia_por_par:parseInt(document.getElementById('gpp').value)||55000,meta_pares:parseInt(document.getElementById('meta').value)||35,deuda_proveedor:parseInt(document.getElementById('deuda').value)||0};await dbPatch('config',data,`?id=eq.${S.cfg.id}`);Object.assign(S.cfg,data);toast('Configuración guardada ✓');}
-async function saveSaldo(){const sef=parseInt(document.getElementById('sef').value)||0;const sban=parseInt(document.getElementById('sban').value)||0;const sfecha=document.getElementById('sfecha').value;if(!sfecha){toast('Selecciona la fecha',false);return;}await dbPatch('config',{saldo_efectivo:sef,saldo_banco:sban,fecha_saldo:sfecha},`?id=eq.${S.cfg.id}`);S.cfg.saldo_efectivo=sef;S.cfg.saldo_banco=sban;S.cfg.fecha_saldo=sfecha;toast('Saldo base actualizado ✓');}
+async function saveSaldo(){
+  const sef=parseInt(document.getElementById('sef').value)||0;const sban=parseInt(document.getElementById('sban').value)||0;const sfecha=document.getElementById('sfecha').value;
+  if(!sfecha){toast('Selecciona la fecha',false);return;}
+  if(sfecha>isoLocal()){toast('La fecha no puede ser futura',false);return;}
+  // Hoy = "lo que hay ahora": lo ya registrado queda dentro del saldo y lo que venga después se suma.
+  // Antes, con la fecha de hoy, todo lo vendido el resto del día quedaba por fuera.
+  let hasta=null;
+  if(sfecha===isoLocal()){hasta=await ultimoIdCaja();if(hasta===null){toast('No se pudo leer la caja. Intenta de nuevo',false);return;}}
+  if(await guardarBase(S.cfg.id,{saldo_efectivo:sef,saldo_banco:sban,fecha_saldo:sfecha},hasta)){
+    toast(hasta!==null&&sinHastaId?'Guardado, pero falta correr supabase/saldo_base.sql: hoy no se sumarán las ventas de hoy':'Saldo base actualizado ✓',!(hasta!==null&&sinHastaId));
+  }
+}
 async function limpiarVentas(){if(!confirm('¿Limpiar ventas y comisiones?'))return;await Promise.all([dbDel('ventas','?id=gt.0'),dbDel('comisiones','?id=gt.0')]);toast('Limpiado');goTo('ajustes');}
 
 async function cierreMes(){
@@ -1242,8 +1273,8 @@ async function cierreMes(){
   // 2. Actualizar saldo base con el saldo final del mes.
   // Fecha base = ayer, para que las ventas de hoy después del cierre sí se sumen.
   const fechaISO=ayerISO();
-  if(!await dbPatch('config',{saldo_efectivo:Math.round(ef),saldo_banco:Math.round(ban),fecha_saldo:fechaISO},`?id=eq.${cfgData.id}`)){toast('Cierre guardado, pero no se actualizó el saldo base. No se borró la caja',false);return;}
-  S.cfg.saldo_efectivo=Math.round(ef);S.cfg.saldo_banco=Math.round(ban);S.cfg.fecha_saldo=fechaISO;
+  const hasta=caja.length?caja[caja.length-1].id:0;
+  if(!await guardarBase(cfgData.id,{saldo_efectivo:Math.round(ef),saldo_banco:Math.round(ban),fecha_saldo:fechaISO},hasta)){toast('Cierre guardado, pero no se actualizó el saldo base. No se borró la caja',false);return;}
   // 3. Limpiar ventas, comisiones y movimientos de caja
   await Promise.all([
     dbDel('ventas','?id=gt.0'),
@@ -1259,8 +1290,7 @@ async function limpiarCaja(){
   if(!caja||!cfg||!cfg[0]){toast('No se pudieron leer los datos. No se limpió',false);return;}
   const{ef,ban}=saldoDe(caja,cfg[0]);
   const base={saldo_efectivo:Math.round(ef),saldo_banco:Math.round(ban),fecha_saldo:ayerISO()};
-  if(!await dbPatch('config',base,`?id=eq.${cfg[0].id}`)){toast('No se pudo guardar el saldo base. No se limpió',false);return;}
-  Object.assign(S.cfg,base);
+  if(!await guardarBase(cfg[0].id,base,caja.length?caja[caja.length-1].id:0)){toast('No se pudo guardar el saldo base. No se limpió',false);return;}
   await dbDel('caja','?id=gt.0');toast('Caja limpia · saldo base '+fmt(ef+ban));goTo('ajustes');
 }
 async function limpiarPedidos(){if(!confirm('¿Eliminar completados?'))return;await dbDel('pedidos','?estado=eq.Completado');toast('Limpiado');goTo('ajustes');}
