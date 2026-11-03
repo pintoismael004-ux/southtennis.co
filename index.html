@@ -161,6 +161,17 @@ const dbGet=(t,q)=>api('GET',t,null,q||'');
 const dbPost=(t,b)=>api('POST',t,b);
 const dbPatch=(t,b,q)=>api('PATCH',t,b,q);
 const dbDel=(t,q)=>api('DELETE',t,null,q);
+/* Guarda la venta con el costo del par en ese momento (columna ventas.costo_unit).
+   Si la columna aún no existe en Supabase, la guarda sin costo para no perder la venta. */
+let sinCostoUnit=false;
+async function postVenta(v,costo){
+  if(!sinCostoUnit){
+    const r=await dbPost('ventas',{...v,costo_unit:costo||0});
+    if(r)return r;
+    sinCostoUnit=true;
+  }
+  return dbPost('ventas',v);
+}
 
 /* usuarios y permisos: sesion.js (las contraseñas están en Supabase → Authentication) */
 const USERS=ST_USERS;
@@ -182,7 +193,7 @@ function toast(msg,ok=true){
   document.querySelectorAll('.tst').forEach(e=>e.remove());
   const d=document.createElement('div');d.className='tst';
   const bottom=isMobile()?'70px':'20px';
-  d.style.cssText=`position:fixed;bottom:${bottom};left:50%;transform:translateX(-50%);z-index:9999;padding:10px 20px;border-radius:20px;font-size:13px;font-weight:600;white-space:nowrap;${ok?'background:#1F5014;color:#fff':'background:#9B1512;color:#fff'}`;
+  d.style.cssText=`position:fixed;bottom:${bottom};left:50%;transform:translateX(-50%);z-index:9999;padding:10px 20px;border-radius:20px;font-size:13px;font-weight:600;width:max-content;max-width:90vw;text-align:center;${ok?'background:#1F5014;color:#fff':'background:#9B1512;color:#fff'}`;
   d.textContent=(ok?'✓ ':'⚠ ')+msg;document.body.appendChild(d);setTimeout(()=>d.remove(),3000);
 }
 
@@ -279,11 +290,14 @@ function parseFecha(f){
   const p=f.split('/');if(p.length===3)return new Date(`${p[2]}-${p[1].padStart(2,'0')}-${p[0].padStart(2,'0')}T00:00:00`);
   return new Date(f);
 }
-function calcSaldos(){
-  const be=S.cfg.saldo_efectivo||0,bb=S.cfg.saldo_banco||0,fb=S.cfg.fecha_saldo||'';
-  let ef=be,ban=bb;
-  const fechaBase=fb?parseFecha(fb):null;
-  S.caja.forEach(r=>{
+// Fecha local yyyy-mm-dd (toISOString usa hora UTC: después de las 7 pm en Colombia daba el día siguiente)
+const isoLocal=(d=new Date())=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+const ayerISO=()=>{const d=new Date();d.setDate(d.getDate()-1);return isoLocal(d);};
+// El saldo base incluye los movimientos de su fecha; solo se suman los de días posteriores
+function saldoDe(caja,cfg){
+  let ef=cfg.saldo_efectivo||0,ban=cfg.saldo_banco||0;
+  const fechaBase=cfg.fecha_saldo?parseFecha(cfg.fecha_saldo):null;
+  (caja||[]).forEach(r=>{
     if(fechaBase){
       const fechaMov=parseFecha(r.fecha);
       if(fechaMov&&fechaMov<=fechaBase)return;
@@ -293,6 +307,13 @@ function calcSaldos(){
   });
   return{ef,ban,total:ef+ban};
 }
+const calcSaldos=()=>saldoDe(S.caja,S.cfg);
+// Las compras de mercancía salen de caja como "Gasto", pero no son gasto operativo:
+// su costo ya se descuenta como costo de lo vendido (si no, se restaba dos veces)
+const esCompraInv=r=>r.tipo==='Gasto'&&/^Compra:/.test(r.descripcion||'');
+const esGastoOp=r=>r.tipo==='Gasto'&&!esCompraInv(r);
+// Ingreso por mercancía de una venta (el domicilio no es venta de zapatos)
+const ventaNeta=v=>(v.total||0)-(v.domicilio||0);
 const tgf=()=>S.cfg.gastos_fijos.reduce((a,b)=>a+(b.monto||0),0);
 const paresV=()=>S.ventas.reduce((a,b)=>a+(b.cant||0),0);
 const capitalSocios=()=>S.socios.reduce((a,s)=>a+(s.aporte_efectivo||0)+(s.aporte_inventario||0),0);
@@ -619,18 +640,28 @@ async function regVenta(){
   const pu=parseInt(document.getElementById('v-precio').value)||0;
   const pago=document.getElementById('v-pago').value;const tipo=document.getElementById('v-tipo').value;
   const dom=parseInt(document.getElementById('v-dom')?.value)||0;
+  if(cant<1){toast('Cantidad inválida',false);return;}
+  if(pu<=0){toast('El precio no puede ser $0',false);return;}
   if(pSel.cant<cant){toast('Stock insuficiente',false);return;}
+  if(pSel.pc&&pu<pSel.pc&&!confirm(`Ojo: ${fmt(pu)} está por debajo del costo (${fmt(pSel.pc)}).\n¿Vender con pérdida?`))return;
   const sub=pu*cant;const total=sub+dom;
   if(!await pedirComp({tipo:'Venta',desc:`${cliente} — ${pSel.nombre} T${talla} x${cant}`,monto:total,pago}))return;
   const btn=document.getElementById('btn-venta');if(btn){btn.disabled=true;btn.textContent='Guardando...';}
-  await Promise.all([
-    dbPatch('inventario',{cant:pSel.cant-cant},`?id=eq.${pSel.id}`),
-    dbPost('ventas',{fecha:hoy(),vendedor:S.session.usuario,cliente,ref:pSel.nombre,talla,cant,precio_unit:pu,total,forma_pago:pago,tipo_venta:tipo,domicilio:dom,descuento:'No'}),
+  const listo=()=>{if(btn){btn.disabled=false;btn.innerHTML='<i class="ti ti-receipt"></i> Registrar venta';}};
+  // Stock real antes de descontar (otro vendedor pudo vender el mismo par)
+  const act=await dbGet('inventario',`?id=eq.${pSel.id}`);
+  const stock=act&&act[0]?act[0].cant:0;
+  if(stock<cant){listo();toast(`Stock insuficiente: quedan ${stock}`,false);goTo('vender');return;}
+  const venta=await postVenta({fecha:hoy(),vendedor:S.session.usuario,cliente,ref:pSel.nombre,talla,cant,precio_unit:pu,total,forma_pago:pago,tipo_venta:tipo,domicilio:dom,descuento:'No'},act[0].pc);
+  if(!venta){listo();toast('No se pudo guardar la venta. Revisa la conexión',false);return;}
+  const ok=await Promise.all([
+    dbPatch('inventario',{cant:stock-cant},`?id=eq.${pSel.id}`),
     dbPost('caja',{fecha:hoy(),tipo:'Venta',descripcion:`${cliente} — ${pSel.nombre} T${talla}`,monto:total,forma_pago:pago}),
     dbPost('comisiones',{fecha:hoy(),vendedor:S.session.usuario,producto:pSel.nombre,bono:5000}),
   ]);
-  pSel.cant-=cant;
-  if(btn){btn.disabled=false;btn.innerHTML='<i class="ti ti-receipt"></i> Registrar venta';}
+  pSel.cant=stock-cant;
+  listo();
+  if(ok.some(r=>!r))toast('Venta guardada, pero falló inventario, caja o comisión. Revísalos',false);
   const txt=`SOUTH TENNIS\n${'─'.repeat(26)}\nFecha:   ${hoy()}\nCliente: ${cliente}\nRef:     ${pSel.nombre} T${talla}\nCant:    ${cant}\nPrecio:  ${fmt(pu)}\nSubtotal:${fmt(sub)}`+(dom?`\nDomicilio:${fmt(dom)}`:'')+`\n\nTOTAL:   ${fmt(total)}\nPago:    ${pago}\n${'─'.repeat(26)}\n¡Gracias por su compra!`;
   const rc=document.getElementById('recibo');
   if(rc)rc.innerHTML=`<div style="background:#F8F8F8;border-radius:8px;padding:.85rem;font-size:11px;white-space:pre-line;font-family:monospace;line-height:1.9;border:1px solid #E8E8E8">${txt}</div>
@@ -638,7 +669,7 @@ async function regVenta(){
     <button class="btn btn-sm" onclick="navigator.clipboard.writeText(\`${txt.replace(/`/g,"'")}\`).then(()=>toast('Copiado'))"><i class="ti ti-copy"></i> Copiar</button>
     <button class="btn btn-r btn-sm" onclick="goTo('vender')"><i class="ti ti-plus"></i> Nueva</button>
   </div>`;
-  S.vProd=null;toast('Venta guardada ✓');
+  S.vProd=null;if(!ok.some(r=>!r))toast('Venta guardada ✓');
 }
 
 /* INVENTARIO */
@@ -773,13 +804,14 @@ async function regPedido(){
   const precio=parseInt(document.getElementById('p-prec').value)||0;const abono=parseInt(document.getElementById('p-abon').value)||0;
   const llegada=document.getElementById('p-lleg').value;const pago=document.getElementById('p-pago').value;
   if(!cli||!ref){toast('Completa cliente y referencia',false);return;}
+  if(abono>precio){toast('El abono no puede ser mayor que el precio',false);return;}
   if(abono>0&&!await pedirComp({tipo:'Abono Pedido',desc:`${cli} — ${ref} T${talla}`,monto:abono,pago}))return;
   await dbPost('pedidos',{fecha:hoy(),vendedor:S.session.usuario,cliente:cli,telefono:tel,referencia:ref,talla,precio,abono,llegada:llegada||'Por confirmar',forma_pago:pago,estado:'Pendiente'});
   if(abono>0)await dbPost('caja',{fecha:hoy(),tipo:'Abono Pedido',descripcion:`${cli} — ${ref}`,monto:abono,forma_pago:pago});
   toast('Pedido guardado ✓');goTo('pedidos');
 }
 async function completarP(id){const p=S.pedidos.find(x=>x.id===id);if(!p)return;const s=p.precio-p.abono;if(s>0&&confirm(`Cobrar saldo ${fmt(s)}?`)){if(!await pedirComp({tipo:'Cobro Pedido',desc:`Saldo ${p.cliente} — ${p.referencia}`,monto:s,pago:p.forma_pago}))return;await dbPost('caja',{fecha:hoy(),tipo:'Cobro Pedido',descripcion:`Saldo ${p.cliente}`,monto:s,forma_pago:p.forma_pago});}await dbPatch('pedidos',{estado:'Completado'},`?id=eq.${id}`);toast('Completado');goTo('pedidos');}
-async function abonarP(id){const p=S.pedidos.find(x=>x.id===id);if(!p)return;const monto=parseInt(prompt(`Abonar a ${p.cliente}\nSaldo: ${fmt(p.precio-p.abono)}`));if(!monto||monto<=0)return;if(!await pedirComp({tipo:'Abono Pedido',desc:`Abono ${p.cliente} — ${p.referencia}`,monto,pago:p.forma_pago}))return;await Promise.all([dbPatch('pedidos',{abono:Math.min(p.abono+monto,p.precio)},`?id=eq.${id}`),dbPost('caja',{fecha:hoy(),tipo:'Abono Pedido',descripcion:`Abono ${p.cliente}`,monto,forma_pago:p.forma_pago})]);toast('Abono guardado');goTo('pedidos');}
+async function abonarP(id){const p=S.pedidos.find(x=>x.id===id);if(!p)return;const saldo=p.precio-p.abono;const monto=Math.min(parseInt(prompt(`Abonar a ${p.cliente}\nSaldo: ${fmt(saldo)}`))||0,saldo);if(monto<=0)return;if(!await pedirComp({tipo:'Abono Pedido',desc:`Abono ${p.cliente} — ${p.referencia}`,monto,pago:p.forma_pago}))return;await Promise.all([dbPatch('pedidos',{abono:Math.min(p.abono+monto,p.precio)},`?id=eq.${id}`),dbPost('caja',{fecha:hoy(),tipo:'Abono Pedido',descripcion:`Abono ${p.cliente}`,monto,forma_pago:p.forma_pago})]);toast('Abono guardado');goTo('pedidos');}
 async function eliminarP(id){if(!confirm('¿Eliminar?'))return;await dbDel('pedidos',`?id=eq.${id}`);toast('Eliminado');goTo('pedidos');}
 
 /* CAJA */
@@ -820,7 +852,13 @@ function pgFin(){
   const{ef,ban,total}=calcSaldos();const gf=tgf();const gsem=Math.round(gf/4);
   const pv=paresV();const meta=S.cfg.meta_pares||35;const pct=Math.min(100,Math.round((pv/meta)*100));
   const ingMes=S.ventas.reduce((a,b)=>a+(b.total||0),0);
-  const gastMes=S.caja.filter(r=>r.tipo==='Gasto').reduce((a,b)=>a+(b.monto||0),0);
+  const gastMes=S.caja.filter(esGastoOp).reduce((a,b)=>a+(b.monto||0),0);
+  // Utilidad del mes en vivo, con el mismo cálculo del cierre de mes
+  let costoMes=0,sinCosto=0;
+  S.ventas.forEach(v=>{const p=S.inventario.find(r=>r.nombre===v.ref&&r.talla===v.talla);const pc=v.costo_unit||(p&&p.pc)||0;if(!pc)sinCosto+=v.cant||0;costoMes+=pc*(v.cant||0);});
+  const utilBruta=S.ventas.reduce((a,v)=>a+ventaNeta(v),0)-costoMes;
+  const utilNeta=utilBruta-gastMes;
+  const porCobrar=S.ventas.filter(v=>v.forma_pago==='Crédito').reduce((a,v)=>a+(v.total||0),0);
   const estado=total-gf-S.cfg.deuda_proveedor;
   return`<div class="ph"><h2 class="pt"><i class="ti ti-chart-pie" style="color:var(--red)"></i> Finanzas</h2></div>
   ${cajaLive()}
@@ -829,7 +867,12 @@ function pgFin(){
     <div class="mc2"><div class="ml">Gastos mes</div><div class="mv r">${fmt(gastMes)}</div></div>
     <div class="mc2"><div class="ml">Gastos fijos</div><div class="mv r">${fmt(gf)}</div></div>
     <div class="mc2"><div class="ml">Capital socios</div><div class="mv b">${fmt(capitalSocios())}</div></div>
+    ${isAdmin()?`<div class="mc2"><div class="ml">Costo vendido</div><div class="mv r" style="font-size:14px">${fmt(costoMes)}</div></div>
+    <div class="mc2"><div class="ml">Utilidad bruta</div><div class="mv ${utilBruta>=0?'g':'r'}" style="font-size:14px">${fmt(utilBruta)}</div></div>
+    <div class="mc2"><div class="ml">Utilidad neta</div><div class="mv ${utilNeta>=0?'g':'r'}" style="font-size:14px">${fmt(utilNeta)}</div></div>`:''}
+    ${porCobrar?`<div class="mc2"><div class="ml">Vendido a crédito</div><div class="mv b" style="font-size:14px">${fmt(porCobrar)}</div></div>`:''}
   </div>
+  ${isAdmin()&&sinCosto?`<div class="card" style="background:#FFF8E1;border-color:#FFE082;font-size:12px;color:#8D6E00">⚠ ${sinCosto} par(es) vendidos sin costo registrado: la utilidad sale más alta de lo real. Pon el P. Compra en Inventario.</div>`:''}
   <div class="cols2">
   <div class="card"><div class="ct" style="display:flex;justify-content:space-between;align-items:center">Gastos fijos ${isAdmin()?`<button class="btn btn-g btn-sm" onclick="showAddGasto()"><i class="ti ti-plus"></i></button>`:''}</div>
   <div id="add-gasto-form"></div>
@@ -854,7 +897,7 @@ function pgFin(){
   ${S.ventas.length===0?`<div style="color:#bbb;text-align:center;padding:1.5rem">Sin ventas</div>`:
   `<table class="tbl"><thead><tr><th>Fecha</th><th>Cliente</th><th>Ref</th><th>T</th><th>Cant</th><th>Total</th><th>Pago</th>${isAdmin()?'<th></th>':''}</tr></thead><tbody>
   ${S.ventas.map(v=>`<tr><td style="color:#bbb;font-size:12px">${v.fecha}</td><td style="font-weight:600">${v.cliente}</td><td>${v.ref}</td><td>${v.talla}</td><td>${v.cant}</td><td style="font-weight:600">${fmt(v.total)}</td><td><span class="tag tm">${v.forma_pago||'—'}</span></td>
-  ${isAdmin()?`<td><button class="btn btn-sm" onclick="delVenta(${v.id},${v.cant},'${v.ref}',${v.talla})" style="color:var(--red);border-color:#F5BABA;padding:4px 7px"><i class="ti ti-trash"></i></button></td>`:''}
+  ${isAdmin()?`<td><button class="btn btn-sm" onclick="delVenta(${v.id})" style="color:var(--red);border-color:#F5BABA;padding:4px 7px"><i class="ti ti-trash"></i></button></td>`:''}
   </tr>`).join('')}</tbody></table>`}
   </div>`;
 }
@@ -865,7 +908,21 @@ function showAddGasto(){document.getElementById('add-gasto-form').innerHTML=`<di
 </div>`;}
 async function delGasto(i){if(!confirm('¿Eliminar?'))return;S.cfg.gastos_fijos.splice(i,1);await dbPatch('config',{gastos_fijos:S.cfg.gastos_fijos},`?id=eq.${S.cfg.id}`);toast('Eliminado');goTo('finanzas');}
 async function addGasto(){const n=document.getElementById('ng-n').value.trim();const m=parseInt(document.getElementById('ng-m').value)||0;if(!n||!m){toast('Ingresa concepto y monto',false);return;}S.cfg.gastos_fijos.push({nombre:n,monto:m});await dbPatch('config',{gastos_fijos:S.cfg.gastos_fijos},`?id=eq.${S.cfg.id}`);toast('Guardado ✓');goTo('finanzas');}
-async function delVenta(id,cant,ref,talla){if(!confirm('¿Eliminar? Se restaura stock.'))return;const rows=await dbGet('inventario',`?nombre=eq.${encodeURIComponent(ref)}&talla=eq.${talla}`);if(rows&&rows[0])await dbPatch('inventario',{cant:rows[0].cant+cant},`?id=eq.${rows[0].id}`);await dbDel('ventas',`?id=eq.${id}`);toast('Eliminada');goTo('finanzas');}
+// Anular una venta: devuelve el stock y quita su entrada de caja y su comisión (antes la plata se quedaba en caja)
+async function delVenta(id){
+  const v=S.ventas.find(x=>x.id===id);if(!v)return;
+  if(v.forma_pago==='Crédito'){toast('Es una venta a crédito: elimínala desde Créditos',false);return;}
+  if(!confirm(`¿Eliminar la venta de ${v.ref} T${v.talla} a ${v.cliente}?\n\nSe devuelve el stock y se quitan ${fmt(v.total)} de caja.`))return;
+  const rows=await dbGet('inventario',`?nombre=eq.${encodeURIComponent(v.ref)}&talla=eq.${v.talla}`);
+  if(rows&&rows[0])await dbPatch('inventario',{cant:rows[0].cant+(v.cant||0)},`?id=eq.${rows[0].id}`);
+  const mov=await dbGet('caja',`?tipo=eq.Venta&fecha=eq.${encodeURIComponent(v.fecha)}&monto=eq.${v.total}&descripcion=eq.${encodeURIComponent(`${v.cliente} — ${v.ref} T${v.talla}`)}&limit=1`);
+  const enCaja=!!(mov&&mov[0]);
+  if(enCaja)await dbDel('caja',`?id=eq.${mov[0].id}`);
+  const com=await dbGet('comisiones',`?vendedor=eq.${encodeURIComponent(v.vendedor)}&producto=eq.${encodeURIComponent(v.ref)}&fecha=eq.${encodeURIComponent(v.fecha)}&limit=1`);
+  if(com&&com[0])await dbDel('comisiones',`?id=eq.${com[0].id}`);
+  await dbDel('ventas',`?id=eq.${id}`);
+  toast(enCaja?'Venta anulada':'Venta anulada, pero no encontré su movimiento en caja: quítalo a mano',enCaja);goTo('finanzas');
+}
 
 /* SOCIOS */
 function pgSocios(){
@@ -976,7 +1033,7 @@ function pgAjustes(){return`<div class="ph"><h2 class="pt"><i class="ti ti-setti
     <button class="btn btn-g" onclick="saveConfig()"><i class="ti ti-check"></i> Guardar</button>
   </div>
   <div class="card" style="border:2px solid #2196F3"><div class="ct" style="color:#0C447C">💰 Saldo base de caja</div>
-    <div style="font-size:13px;color:#888;margin-bottom:.75rem">Define el dinero que tienes hoy. El sistema suma los movimientos nuevos desde esta fecha.</div>
+    <div style="font-size:13px;color:#888;margin-bottom:.75rem">Define el dinero que tienes al <b>final</b> del día que elijas (con las ventas y gastos de ese día ya incluidos). El sistema suma solo los movimientos de los días siguientes.</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px">
       <div class="frow"><label>Efectivo hoy</label><input id="sef" type="number" value="${S.cfg.saldo_efectivo||0}"/></div>
       <div class="frow"><label>En banco hoy</label><input id="sban" type="number" value="${S.cfg.saldo_banco||0}"/></div>
@@ -1004,40 +1061,44 @@ async function cierreMes(){
     dbGet('caja','?order=id'),dbGet('inventario','?order=id'),
     dbGet('config','?limit=1'),
   ]);
+  if(!ventas||!caja||!comisiones||!inventario){toast('No se pudieron leer los datos. No se cerró el mes',false);return;}
   const cfgData=cfg&&cfg[0]?cfg[0]:S.cfg;
-  // Calcular saldo actual real
-  const fb=cfgData.fecha_saldo||'';
-  let ef=cfgData.saldo_efectivo||0,ban=cfgData.saldo_banco||0;
-  (caja||[]).forEach(r=>{
-    if(fb&&r.fecha<=fb)return;
-    const fp=r.forma_pago||'Efectivo';const add=r.tipo!=='Gasto';
-    if(fp==='Efectivo')ef+=add?r.monto:-r.monto;else ban+=add?r.monto:-r.monto;
-  });
+  // Saldo actual real (antes comparaba fechas como texto y dejaba por fuera movimientos)
+  const{ef,ban}=saldoDe(caja,cfgData);
   // Calcular métricas del mes
-  const totalVentas=(ventas||[]).reduce((a,b)=>a+(b.total||0),0);
-  const totalPares=(ventas||[]).reduce((a,b)=>a+(b.cant||0),0);
-  const totalGastos=(caja||[]).filter(r=>r.tipo==='Gasto').reduce((a,b)=>a+(b.monto||0),0);
-  const totalComisiones=(comisiones||[]).reduce((a,b)=>a+(b.bono||0),0);
-  let costoVendido=0;
-  (ventas||[]).forEach(v=>{
-    const p=(inventario||[]).find(r=>r.nombre===v.ref&&r.talla===v.talla);
-    costoVendido+=(p?p.pc||0:0)*(v.cant||0);
+  const totalVentas=ventas.reduce((a,b)=>a+(b.total||0),0);
+  const totalPares=ventas.reduce((a,b)=>a+(b.cant||0),0);
+  const totalGastos=caja.filter(esGastoOp).reduce((a,b)=>a+(b.monto||0),0);
+  const totalCompras=caja.filter(esCompraInv).reduce((a,b)=>a+(b.monto||0),0);
+  const totalComisiones=comisiones.reduce((a,b)=>a+(b.bono||0),0);
+  // Costo de lo vendido: el guardado en la venta; si no hay, el costo actual del inventario
+  let costoVendido=0,sinCosto=0;
+  ventas.forEach(v=>{
+    const p=inventario.find(r=>r.nombre===v.ref&&r.talla===v.talla);
+    const pc=v.costo_unit||(p&&p.pc)||0;
+    if(!pc)sinCosto+=v.cant||0;
+    costoVendido+=pc*(v.cant||0);
   });
-  const utilBruta=totalVentas-costoVendido;
+  if(sinCosto&&!confirm(`${sinCosto} par(es) vendidos no tienen costo registrado, así que la utilidad saldrá más alta de lo real.\n\n¿Cerrar el mes de todas formas?`))return;
+  const utilBruta=ventas.reduce((a,v)=>a+ventaNeta(v),0)-costoVendido;
   const utilNeta=utilBruta-totalGastos;
-  const mes=new Date().toLocaleDateString('es-CO',{month:'long',year:'numeric'});
+  // Si se cierra en los primeros días del mes, el cierre corresponde al mes anterior
+  const dMes=new Date();if(dMes.getDate()<=5)dMes.setDate(0);
+  const mes=dMes.toLocaleDateString('es-CO',{month:'long',year:'numeric'});
   const fechaHoy=hoy();
-  // 1. Guardar cierre
-  await dbPost('cierres_mes',{
+  // 1. Guardar cierre (si falla, no se borra nada)
+  const guardado=await dbPost('cierres_mes',{
     fecha:fechaHoy,mes,
     total_ventas:totalVentas,total_pares:totalPares,
     total_gastos:totalGastos,utilidad_bruta:utilBruta,
     utilidad_neta:utilNeta,total_comisiones:totalComisiones,
-    resumen:{saldo_efectivo:ef,saldo_banco:ban,ventas_count:(ventas||[]).length}
+    resumen:{saldo_efectivo:ef,saldo_banco:ban,ventas_count:ventas.length,costo_vendido:costoVendido,compras_mercancia:totalCompras,pares_sin_costo:sinCosto}
   });
-  // 2. Actualizar saldo base con el saldo final del mes
-  const fechaISO=new Date().toISOString().split('T')[0];
-  await dbPatch('config',{saldo_efectivo:Math.round(ef),saldo_banco:Math.round(ban),fecha_saldo:fechaISO},`?id=eq.${cfgData.id}`);
+  if(!guardado){toast('No se pudo guardar el cierre. No se borró nada',false);return;}
+  // 2. Actualizar saldo base con el saldo final del mes.
+  // Fecha base = ayer, para que las ventas de hoy después del cierre sí se sumen.
+  const fechaISO=ayerISO();
+  if(!await dbPatch('config',{saldo_efectivo:Math.round(ef),saldo_banco:Math.round(ban),fecha_saldo:fechaISO},`?id=eq.${cfgData.id}`)){toast('Cierre guardado, pero no se actualizó el saldo base. No se borró la caja',false);return;}
   S.cfg.saldo_efectivo=Math.round(ef);S.cfg.saldo_banco=Math.round(ban);S.cfg.fecha_saldo=fechaISO;
   // 3. Limpiar ventas, comisiones y movimientos de caja
   await Promise.all([
@@ -1047,7 +1108,17 @@ async function cierreMes(){
   ]);
   toast('Mes cerrado ✓ Saldo base actualizado a '+fmt(ef+ban));goTo('ajustes');
 }
-async function limpiarCaja(){if(!confirm('¿Limpiar caja?'))return;await dbDel('caja','?id=gt.0');toast('Limpiado');goTo('ajustes');}
+// Antes de borrar los movimientos, deja el saldo actual como base (si no, el dinero disponible se "perdía")
+async function limpiarCaja(){
+  if(!confirm('¿Limpiar caja?\n\nEl saldo actual quedará como saldo base para no perder el dinero disponible.'))return;
+  const[caja,cfg]=await Promise.all([dbGet('caja','?order=id'),dbGet('config','?limit=1')]);
+  if(!caja||!cfg||!cfg[0]){toast('No se pudieron leer los datos. No se limpió',false);return;}
+  const{ef,ban}=saldoDe(caja,cfg[0]);
+  const base={saldo_efectivo:Math.round(ef),saldo_banco:Math.round(ban),fecha_saldo:ayerISO()};
+  if(!await dbPatch('config',base,`?id=eq.${cfg[0].id}`)){toast('No se pudo guardar el saldo base. No se limpió',false);return;}
+  Object.assign(S.cfg,base);
+  await dbDel('caja','?id=gt.0');toast('Caja limpia · saldo base '+fmt(ef+ban));goTo('ajustes');
+}
 async function limpiarPedidos(){if(!confirm('¿Eliminar completados?'))return;await dbDel('pedidos','?estado=eq.Completado');toast('Limpiado');goTo('ajustes');}
 async function limpiarInv(){if(!confirm('¿Vaciar inventario?'))return;await dbDel('inventario','?id=gt.0');S.inventario=[];toast('Limpiado');goTo('ajustes');}
 
@@ -1149,6 +1220,9 @@ async function regCredito(){
   const res=await dbPost('creditos',{fecha:hoy(),vendedor:S.session.usuario,cliente:cli,telefono:tel,ref,talla,cant,precio_total:precio,abono_inicial:abono,saldo,num_cuotas:cuotas,valor_cuota:vcuota,cuotas_pagadas:0,forma_pago:pago,notas,estado:'Pendiente'});
   if(!res){toast('No se pudo guardar el crédito',false);return;}
   await dbPatch('inventario',{cant:stock-cant},`?id=eq.${prod.id}`);
+  // También es una venta: cuenta para ingresos, pares vendidos y utilidad del mes.
+  // La plata entra a caja solo a medida que el cliente abona.
+  await postVenta({fecha:hoy(),vendedor:S.session.usuario,cliente:cli,ref,talla,cant,precio_unit:Math.round(precio/cant),total:precio,forma_pago:'Crédito',tipo_venta:'Crédito',domicilio:0,descuento:'No'},act[0].pc);
   if(abono>0)await dbPost('caja',{fecha:hoy(),tipo:'Cobro Crédito',descripcion:`Abono inicial ${cli} — ${ref}`,monto:abono,forma_pago:pago});
   toast('Crédito registrado ✓');goTo('creditos');
 }
@@ -1179,7 +1253,18 @@ async function abonarCreditoLibre(id,saldoAct){
   ]);
   toast('Abono registrado ✓');goTo('creditos');
 }
-async function cerrarCredito(id){if(!confirm('¿Marcar como pagado?'))return;await dbPatch('creditos',{saldo:0,estado:'Pagado'},`?id=eq.${id}`);toast('Cerrado ✓');goTo('creditos');}
+// Si el cliente pagó lo que debía, ese dinero entra a caja; si no, queda como saldo perdonado
+async function cerrarCredito(id){
+  const c=(S.creditos||[]).find(x=>x.id===id);if(!c)return;
+  if(!confirm(`¿Cerrar el crédito de ${c.cliente}?`))return;
+  if(c.saldo>0){
+    if(confirm(`¿El cliente pagó el saldo de ${fmt(c.saldo)}?\n\nAceptar = entra a caja\nCancelar = se perdona (no entra plata)`)){
+      if(!await pedirComp({tipo:'Cobro Crédito',desc:`Saldo final — ${c.cliente} ${c.ref}`,monto:c.saldo,pago:c.forma_pago}))return;
+      await dbPost('caja',{fecha:hoy(),tipo:'Cobro Crédito',descripcion:`Saldo final — ${c.cliente} ${c.ref}`,monto:c.saldo,forma_pago:c.forma_pago});
+    }else await dbPatch('creditos',{notas:`${c.notas?c.notas+' · ':''}Saldo perdonado ${fmt(c.saldo)}`},`?id=eq.${id}`);
+  }
+  await dbPatch('creditos',{saldo:0,estado:'Pagado'},`?id=eq.${id}`);toast('Cerrado ✓');goTo('creditos');
+}
 async function delCredito(id){
   const c=(S.creditos||[]).find(x=>x.id===id);if(!c)return;
   if(!confirm(`¿Eliminar el crédito de ${c.cliente}?`))return;
@@ -1189,6 +1274,10 @@ async function delCredito(id){
     if(rows&&rows[0])await dbPatch('inventario',{cant:rows[0].cant+(c.cant||1)},`?id=eq.${rows[0].id}`);
     else toast(`${c.ref} T${c.talla} no está en inventario; agrégalo a mano`,false);
   }
+  // Si se anula un crédito pendiente, quitar la venta a crédito que se registró con él (si es del mes actual).
+  // Borrar un crédito ya pagado es solo limpiar el historial: la venta se mantiene.
+  const v=c.estado==='Pagado'?null:await dbGet('ventas',`?forma_pago=eq.Cr%C3%A9dito&cliente=eq.${encodeURIComponent(c.cliente)}&ref=eq.${encodeURIComponent(c.ref)}&talla=eq.${c.talla}&limit=1`);
+  if(v&&v[0])await dbDel('ventas',`?id=eq.${v[0].id}`);
   await dbDel('creditos',`?id=eq.${id}`);toast('Eliminado');goTo('creditos');
 }
 
@@ -1275,10 +1364,24 @@ async function regPedidoProv(){
 async function recibirPedidoProv(id){
   const p=(S.pedidosProv||[]).find(x=>x.id===id);if(!p)return;
   if(!confirm(`¿Marcar recibido?\nSe agregarán ${p.cant} uds de ${p.ref} T${p.talla} al inventario.`))return;
-  if(!await pedirComp({tipo:'Gasto',desc:`Compra: ${p.ref} T${p.talla} x${p.cant}`,monto:p.total,pago:'Transferencia'}))return;
   const exist=await dbGet('inventario',`?nombre=eq.${encodeURIComponent(p.ref)}&talla=eq.${p.talla}`);
-  if(exist&&exist[0]){await dbPatch('inventario',{cant:exist[0].cant+p.cant},`?id=eq.${exist[0].id}`);}
-  else{await dbPost('inventario',{nombre:p.ref,talla:p.talla,genero:p.genero||'MIXTO',cant:p.cant,precio:0,pc:p.precio_compra,origen:'nuevo'});}
+  if(!exist){toast('No se pudo leer el inventario',false);return;}
+  let pv=0;
+  if(!exist[0]){
+    // Referencia nueva: pedir el precio de venta (antes quedaba en $0)
+    const ref=(S.inventario||[]).find(r=>r.nombre===p.ref&&r.precio>0);
+    pv=parseInt(prompt(`Precio de venta para ${p.ref} T${p.talla}:`,ref?ref.precio:165000))||0;
+    if(pv<=0){toast('Necesito el precio de venta para agregarlo',false);return;}
+  }
+  if(!await pedirComp({tipo:'Gasto',desc:`Compra: ${p.ref} T${p.talla} x${p.cant}`,monto:p.total,pago:'Transferencia'}))return;
+  if(exist[0]){
+    // Costo promedio ponderado entre lo que había y lo que llega
+    const e=exist[0],tot=e.cant+p.cant;
+    const pc=p.precio_compra?Math.round(((e.pc||p.precio_compra)*e.cant+p.precio_compra*p.cant)/tot):e.pc;
+    await dbPatch('inventario',{cant:tot,pc},`?id=eq.${e.id}`);
+  }else{
+    await dbPost('inventario',{nombre:p.ref,talla:p.talla,genero:p.genero||'MIXTO',cant:p.cant,precio:pv,pc:p.precio_compra,origen:'nuevo'});
+  }
   await dbPatch('pedidos_proveedor',{estado:'Recibido'},`?id=eq.${id}`);
   await dbPost('caja',{fecha:hoy(),tipo:'Gasto',descripcion:`Compra: ${p.ref} T${p.talla} x${p.cant}`,monto:p.total,forma_pago:'Transferencia'});
   toast('Recibido · inventario actualizado ✓');goTo('pedidos-proveedor');
