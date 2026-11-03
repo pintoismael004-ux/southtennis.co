@@ -153,9 +153,15 @@ const LOGO_B64='iVBORw0KGgoAAAANSUhEUgAAAfQAAAH0CAYAAADL1t+KAABJcklEQVR4Xu3dCbAs
 const SB='https://imjdjitpxuwulpsgezdf.supabase.co';
 const KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImltamRqaXRweHV3dWxwc2dlemRmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODExOTA3NjgsImV4cCI6MjA5Njc2Njc2OH0.Qz0uaCqGumORrkq0UNXcXnmG-hjTgiYMDxCM_I-AU2M';
 /* cada petición va con la sesión del usuario (sesion.js); sin sesión la base de datos no responde */
-async function api(m,t,b,q=''){
-  const r=await Sesion.fetch(`${SB}/rest/v1/${t}${q}`,{method:m,headers:{'Content-Type':'application/json','Prefer':'return=representation'},...(b?{body:JSON.stringify(b)}:{})});
-  const txt=await r.text();if(!r.ok){console.error(t,r.status,txt);return null;}return txt?JSON.parse(txt):[];
+/* Si algo no se guarda, se avisa (antes fallaba en silencio y salía "Guardado ✓") */
+let errAt=0;
+async function api(m,t,b,q='',silent=false){
+  let r;
+  try{r=await Sesion.fetch(`${SB}/rest/v1/${t}${q}`,{method:m,headers:{'Content-Type':'application/json','Prefer':'return=representation'},...(b?{body:JSON.stringify(b)}:{})});}
+  catch(e){console.error(t,e);if(!silent){errAt=Date.now();toast('Sin conexión: '+(m==='GET'?'no se pudieron cargar los datos':'no se guardó. Intenta de nuevo'),false);}return null;}
+  const txt=await r.text();
+  if(!r.ok){console.error(t,r.status,txt);if(!silent&&m!=='GET'){errAt=Date.now();toast(`No se guardó en la base de datos (error ${r.status}). Revisa e intenta de nuevo`,false);}return null;}
+  return txt?JSON.parse(txt):[];
 }
 const dbGet=(t,q)=>api('GET',t,null,q||'');
 const dbPost=(t,b)=>api('POST',t,b);
@@ -166,7 +172,7 @@ const dbDel=(t,q)=>api('DELETE',t,null,q);
 let sinCostoUnit=false;
 async function postVenta(v,costo){
   if(!sinCostoUnit){
-    const r=await dbPost('ventas',{...v,costo_unit:costo||0});
+    const r=await api('POST','ventas',{...v,costo_unit:costo||0},'',true);
     if(r)return r;
     sinCostoUnit=true;
   }
@@ -190,6 +196,8 @@ const isAdmin=()=>S.session?.permiso==='administrador';
 const isMobile=()=>window.innerWidth<=700;
 
 function toast(msg,ok=true){
+  // no tapar un error reciente con un mensaje de éxito
+  if(ok&&Date.now()-errAt<3500)return;
   document.querySelectorAll('.tst').forEach(e=>e.remove());
   const d=document.createElement('div');d.className='tst';
   const bottom=isMobile()?'70px':'20px';
@@ -282,6 +290,35 @@ function pedirComp(m){
   });
 }
 
+// Ventana para elegir una opción (forma de pago, etc.). Devuelve la opción o null si se cancela.
+function elegir(titulo,opciones,nota=''){
+  return new Promise(res=>{
+    const bg=document.createElement('div');bg.className='modal-bg';
+    bg.innerHTML=`<div class="modal">
+      <div style="font-size:15px;font-weight:600;margin-bottom:${nota?4:12}px">${esc(titulo)}</div>
+      ${nota?`<div style="font-size:12px;color:#888;margin-bottom:12px">${esc(nota)}</div>`:''}
+      ${opciones.map((o,i)=>`<button class="btn btn-full" data-i="${i}" style="margin-bottom:8px">${esc(o)}</button>`).join('')}
+      <button class="btn btn-full" data-i="-1" style="color:#888;border-color:transparent">Cancelar</button>
+    </div>`;
+    bg.onclick=e=>{
+      const b=e.target.closest('button');if(!b&&e.target!==bg)return;
+      const i=b?+b.dataset.i:-1;bg.remove();res(i>=0?opciones[i]:null);
+    };
+    document.body.appendChild(bg);
+  });
+}
+const PAGOS=['Efectivo','Transferencia','Bancolombia'];
+// Evita registrar dos veces lo mismo por doble clic o por tocar el botón mientras guarda
+let ocupado=false;
+const una=fn=>async(...a)=>{if(ocupado)return;ocupado=true;try{return await fn(...a);}finally{ocupado=false;}};
+function setCfg(c){
+  if(!c||!c[0])return;
+  S.cfg={...S.cfg,...c[0]};
+  if(!Array.isArray(S.cfg.gastos_fijos))S.cfg.gastos_fijos=[];
+  if(!Array.isArray(S.cfg.capital_social))S.cfg.capital_social=[];
+}
+async function cfgActual(){const c=await dbGet('config','?limit=1');setCfg(c);return c&&c[0]?S.cfg:null;}
+
 function parseFecha(f){
   if(!f)return null;
   // Si es formato ISO yyyy-mm-dd
@@ -302,7 +339,7 @@ function saldoDe(caja,cfg){
       const fechaMov=parseFecha(r.fecha);
       if(fechaMov&&fechaMov<=fechaBase)return;
     }
-    const fp=r.forma_pago||'Efectivo';const add=r.tipo!=='Gasto';
+    const fp=r.forma_pago||'Efectivo';const add=!esSalida(r);
     if(fp==='Efectivo')ef+=add?r.monto:-r.monto;else ban+=add?r.monto:-r.monto;
   });
   return{ef,ban,total:ef+ban};
@@ -310,8 +347,27 @@ function saldoDe(caja,cfg){
 const calcSaldos=()=>saldoDe(S.caja,S.cfg);
 // Las compras de mercancía salen de caja como "Gasto", pero no son gasto operativo:
 // su costo ya se descuenta como costo de lo vendido (si no, se restaba dos veces)
-const esCompraInv=r=>r.tipo==='Gasto'&&/^Compra:/.test(r.descripcion||'');
+// Tipos de movimiento que sacan plata de caja. Solo "Gasto" (que no sea compra de mercancía) baja la utilidad:
+// un retiro de socio, un pago de deuda al proveedor o una devolución a un cliente no son gasto del negocio.
+const SALIDAS=['Gasto','Retiro socio','Pago proveedor','Devolución'];
+const TIPOS_MOV=['Gasto','Ingreso manual','Aporte Capital','Retiro socio','Pago proveedor','Devolución'];
+const esSalida=r=>SALIDAS.includes(r.tipo);
+const esCompraInv=r=>r.tipo==='Pago proveedor'||(r.tipo==='Gasto'&&/^Compra:/.test(r.descripcion||''));
 const esGastoOp=r=>r.tipo==='Gasto'&&!esCompraInv(r);
+// Gastos fijos: se marcan pagados cuando se pagan desde Finanzas (quedan en caja como "Gasto fijo: nombre")
+const descGF=g=>`Gasto fijo: ${g.nombre}`;
+const gfPagado=g=>S.caja.some(r=>r.tipo==='Gasto'&&r.descripcion===descGF(g));
+const gfPend=()=>S.cfg.gastos_fijos.filter(g=>!gfPagado(g)).reduce((a,g)=>a+(g.monto||0),0);
+// Lo que hay, lo que nos deben y lo que debemos (antes se restaban los gastos fijos completos aunque ya se hubieran pagado)
+function posicion(){
+  const{total}=calcSaldos();
+  const porCobrarCred=(S.creditos||[]).filter(c=>c.estado==='Pendiente').reduce((a,c)=>a+(c.saldo||0),0);
+  const porCobrarPed=(S.pedidos||[]).filter(p=>p.estado==='Pendiente').reduce((a,p)=>a+Math.max(0,(p.precio||0)-(p.abono||0)),0);
+  const nomPend=(S.nomina||[]).filter(n=>n.estado==='Pendiente').reduce((a,n)=>a+(n.total||0),0);
+  const gfP=gfPend();const deuda=S.cfg.deuda_proveedor||0;
+  const porPagar=gfP+deuda+nomPend;
+  return{total,porCobrarCred,porCobrarPed,porCobrar:porCobrarCred+porCobrarPed,nomPend,gfP,deuda,porPagar,estado:total-porPagar};
+}
 // Ingreso por mercancía de una venta (el domicilio no es venta de zapatos)
 const ventaNeta=v=>(v.total||0)-(v.domicilio||0);
 const tgf=()=>S.cfg.gastos_fijos.reduce((a,b)=>a+(b.monto||0),0);
@@ -324,25 +380,27 @@ const valInv=(arr)=>arr.reduce((a,b)=>a+(b.cant*(b.pc||0)),0);
 async function cargar(p){
   const full=['dashboard','finanzas','socios'];
   if(full.includes(p)){
-    const[inv,ven,ped,caj,cfg,com,soc]=await Promise.all([
+    const[inv,ven,ped,caj,cfg,com,soc,cre,nom]=await Promise.all([
       dbGet('inventario','?order=talla,nombre'),dbGet('ventas','?order=id.desc'),
       dbGet('pedidos','?order=id.desc'),dbGet('caja','?order=id.desc'),
       dbGet('config','?limit=1'),dbGet('comisiones','?order=id.desc'),
-      dbGet('socios','?order=id'),
+      dbGet('socios','?order=id'),dbGet('creditos','?estado=eq.Pendiente'),
+      dbGet('nomina','?estado=eq.Pendiente'),
     ]);
     S.inventario=inv||[];S.ventas=ven||[];S.pedidos=ped||[];S.caja=caj||[];S.comisiones=com||[];S.socios=soc||[];
-    if(cfg&&cfg[0])S.cfg={...S.cfg,...cfg[0]};
+    S.creditos=cre||[];S.nomina=nom||[];
+    setCfg(cfg);
   }else if(p==='inventario')S.inventario=await dbGet('inventario','?order=talla,nombre')||[];
   else if(p==='vender'){S.inventario=await dbGet('inventario','?cant=gt.0&order=talla,nombre')||[];S.vTalla=null;S.vProd=null;}
   else if(p==='pedidos')S.pedidos=await dbGet('pedidos','?order=id.desc')||[];
-  else if(p==='caja'){S.caja=await dbGet('caja','?order=id.desc')||[];const c=await dbGet('config','?limit=1');if(c&&c[0])S.cfg={...S.cfg,...c[0]};}
+  else if(p==='caja'){S.caja=await dbGet('caja','?order=id.desc')||[];const c=await dbGet('config','?limit=1');setCfg(c);}
   else if(p==='creditos'){const[cr,inv]=await Promise.all([dbGet('creditos','?order=id.desc'),dbGet('inventario','?cant=gt.0&order=nombre,talla')]);S.creditos=cr||[];S.inventario=inv||[];}
-  else if(p==='nomina'){S.nomina=await dbGet('nomina','?order=id.desc')||[];S.comisiones=await dbGet('comisiones','?order=id.desc')||[];}
+  else if(p==='nomina'){const[n,c]=await Promise.all([dbGet('nomina','?order=id.desc'),dbGet('comisiones','?order=id.desc')]);S.nomina=n||[];S.comisiones=c||[];}
   else if(p==='cierres'){S.cierres=await dbGet('cierres_mes','?order=id.desc')||[];}
   else if(p==='pedidos-proveedor'){S.pedidosProv=await dbGet('pedidos_proveedor','?order=id.desc')||[];S.inventario=await dbGet('inventario','?order=talla,nombre')||[];S.stockMin=await dbGet('stock_minimo','?order=ref')||[];}
   else if(p==='comisiones')S.comisiones=await dbGet('comisiones','?order=id.desc')||[];
   else if(p==='empaques')S.empaques=await dbGet('empaques','?order=id')||[];
-  else if(p==='ajustes'){const c=await dbGet('config','?limit=1');if(c&&c[0])S.cfg={...S.cfg,...c[0]};}
+  else if(p==='ajustes'){const c=await dbGet('config','?limit=1');setCfg(c);}
   if(p==='dashboard'||p==='tareas')S.tareas=await tareasGet();
 }
 
@@ -362,7 +420,7 @@ async function goTo(p){
   if(['dashboard','caja'].includes(p)){
     S.cajaTimer=setInterval(async()=>{
       S.caja=await dbGet('caja','?order=id.desc')||[];
-      const c=await dbGet('config','?limit=1');if(c&&c[0])S.cfg={...S.cfg,...c[0]};
+      const c=await dbGet('config','?limit=1');setCfg(c);
       const{ef,ban,total}=calcSaldos();
       ['lef','lban','ltot'].forEach((id,i)=>{const el=document.getElementById(id);if(el)el.textContent=fmt([ef,ban,total][i]);});
     },30000);
@@ -537,9 +595,24 @@ function pgTareas(){
     </tbody></table></div>`:''}`;
 }
 
+/* POSICIÓN: disponible − lo que se debe, y lo que nos deben */
+function resumenPos(){
+  const P=posicion();
+  const fila=(l,v,c,ir)=>`<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #F0F0F0${ir?';cursor:pointer':''}"${ir?` onclick="goTo('${ir}')"`:''}><span style="color:#aaa">${l}</span><span style="color:${c};font-weight:600">${fmt(v)}</span></div>`;
+  return`<div class="card"><div class="ct">Posición del negocio</div>
+    <div style="font-size:13px">
+      ${fila('Dinero disponible',P.total,'#1A1A1A')}
+      ${fila('− Gastos fijos sin pagar este mes',P.gfP,'var(--red)','finanzas')}
+      ${fila('− Deuda proveedor',P.deuda,'var(--red)')}
+      ${P.nomPend?fila('− Nómina liquidada sin pagar',P.nomPend,'var(--red)','nomina'):''}
+    </div>
+    <div class="ebox ${P.estado>=0?'ep':'en'}">${P.estado>=0?'✓ Libre después de pagar todo: '+fmt(P.estado):'⚠ Faltan '+fmt(Math.abs(P.estado))+' para cubrir lo que se debe'}</div>
+    ${P.porCobrar?`<div style="font-size:12px;color:#0C447C;margin-top:8px;display:flex;justify-content:space-between;gap:8px"><span>Por cobrar (créditos ${fmt(P.porCobrarCred)} · saldos de pedidos ${fmt(P.porCobrarPed)})</span><b>${fmt(P.porCobrar)}</b></div>`:''}
+  </div>`;
+}
+
 /* DASHBOARD */
 function pgDash(){
-  const{total}=calcSaldos();const gf=tgf();const estado=total-gf-S.cfg.deuda_proveedor;
   const pv=paresV();const meta=S.cfg.meta_pares||35;const pct=Math.min(100,Math.round((pv/meta)*100));
   const pend=S.pedidos.filter(p=>p.estado==='Pendiente');
   const top={};S.inventario.forEach(i=>{if(!top[i.nombre])top[i.nombre]=0;top[i.nombre]+=i.cant;});
@@ -567,14 +640,7 @@ function pgDash(){
   <div class="card"><div class="ct">Top referencias</div>
     ${tops.length?`<table class="tbl"><thead><tr><th>Ref</th><th>Uds</th></tr></thead><tbody>${tops.map(([n,v])=>`<tr><td style="font-weight:600">${n}</td><td>${v}</td></tr>`).join('')}</tbody></table>`:'<span style="color:#bbb;font-size:13px">Sin stock</span>'}
   </div>
-  <div class="card"><div class="ct">Resumen</div>
-    <div style="font-size:13px">
-      <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #F0F0F0"><span style="color:#aaa">Gastos fijos</span><span style="color:var(--red);font-weight:600">${fmt(gf)}</span></div>
-      <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #F0F0F0"><span style="color:#aaa">Deuda proveedor</span><span style="color:var(--red);font-weight:600">${fmt(S.cfg.deuda_proveedor)}</span></div>
-      <div style="display:flex;justify-content:space-between;padding:5px 0"><span style="color:#aaa">Capital socios</span><span style="color:#0C447C;font-weight:600">${fmt(capitalSocios())}</span></div>
-    </div>
-    <div class="ebox ${estado>=0?'ep':'en'}">${estado>=0?'✓ Superávit '+fmt(estado):'⚠ Déficit '+fmt(Math.abs(estado))}</div>
-  </div></div>
+  ${resumenPos()}</div>
   ${pend.length?`<div class="card"><div class="ct" style="display:flex;align-items:center;justify-content:space-between">Pedidos pendientes <button class="btn btn-r btn-sm" onclick="goTo('pedidos')">Ver →</button></div>
   ${pend.slice(0,4).map(p=>`<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #F5F5F5;font-size:13px"><div><span style="font-weight:600">${p.cliente}</span> <span style="color:#aaa">${p.referencia} T${p.talla}</span></div><span style="color:var(--red);font-weight:600">${fmt(p.precio-p.abono)}</span></div>`).join('')}
   </div>`:''}`;
@@ -803,48 +869,91 @@ async function regPedido(){
   const ref=document.getElementById('p-ref').value.trim().toUpperCase();const talla=parseInt(document.getElementById('p-tall').value);
   const precio=parseInt(document.getElementById('p-prec').value)||0;const abono=parseInt(document.getElementById('p-abon').value)||0;
   const llegada=document.getElementById('p-lleg').value;const pago=document.getElementById('p-pago').value;
-  if(!cli||!ref){toast('Completa cliente y referencia',false);return;}
-  if(abono>precio){toast('El abono no puede ser mayor que el precio',false);return;}
+  if(!cli||!ref||!talla){toast('Completa cliente, referencia y talla',false);return;}
+  if(precio<=0){toast('El precio no puede ser $0',false);return;}
+  if(abono<0||abono>precio){toast('El abono no puede ser mayor que el precio',false);return;}
   if(abono>0&&!await pedirComp({tipo:'Abono Pedido',desc:`${cli} — ${ref} T${talla}`,monto:abono,pago}))return;
-  await dbPost('pedidos',{fecha:hoy(),vendedor:S.session.usuario,cliente:cli,telefono:tel,referencia:ref,talla,precio,abono,llegada:llegada||'Por confirmar',forma_pago:pago,estado:'Pendiente'});
+  if(!await dbPost('pedidos',{fecha:hoy(),vendedor:S.session.usuario,cliente:cli,telefono:tel,referencia:ref,talla,precio,abono,llegada:llegada||'Por confirmar',forma_pago:pago,estado:'Pendiente'}))return;
   if(abono>0)await dbPost('caja',{fecha:hoy(),tipo:'Abono Pedido',descripcion:`${cli} — ${ref}`,monto:abono,forma_pago:pago});
   toast('Pedido guardado ✓');goTo('pedidos');
 }
-async function completarP(id){const p=S.pedidos.find(x=>x.id===id);if(!p)return;const s=p.precio-p.abono;if(s>0&&confirm(`Cobrar saldo ${fmt(s)}?`)){if(!await pedirComp({tipo:'Cobro Pedido',desc:`Saldo ${p.cliente} — ${p.referencia}`,monto:s,pago:p.forma_pago}))return;await dbPost('caja',{fecha:hoy(),tipo:'Cobro Pedido',descripcion:`Saldo ${p.cliente}`,monto:s,forma_pago:p.forma_pago});}await dbPatch('pedidos',{estado:'Completado'},`?id=eq.${id}`);toast('Completado');goTo('pedidos');}
+// Entregar un pedido: se cobra el saldo y queda registrado como venta (antes no contaba en ventas,
+// pares ni utilidad, y el zapato recibido del proveedor se quedaba para siempre en el inventario)
+async function completarP(id){
+  const p=S.pedidos.find(x=>x.id===id);if(!p)return;
+  const s=(p.precio||0)-(p.abono||0);
+  if(s>0){
+    if(!confirm(`${p.cliente} debe ${fmt(s)}.\n\n¿Ya pagó el saldo? (Aceptar = entra a caja)`)){toast('Cobra el saldo antes de entregar (o usa Abonar)',false);return;}
+    if(!await pedirComp({tipo:'Cobro Pedido',desc:`Saldo ${p.cliente} — ${p.referencia}`,monto:s,pago:p.forma_pago}))return;
+    if(!await dbPost('caja',{fecha:hoy(),tipo:'Cobro Pedido',descripcion:`Saldo ${p.cliente} — ${p.referencia}`,monto:s,forma_pago:p.forma_pago}))return;
+    await dbPatch('pedidos',{abono:p.precio},`?id=eq.${id}`);
+  }
+  const inv=await dbGet('inventario',`?nombre=eq.${encodeURIComponent(p.referencia)}&talla=eq.${p.talla}`);
+  const item=inv&&inv[0];let costo=item?item.pc||0:0;
+  if(item&&item.cant>0&&confirm(`¿El par sale del inventario?\n(Hay ${item.cant} de ${p.referencia} T${p.talla})\n\nAceptar = descontar 1 · Cancelar = llegó aparte`)){
+    await dbPatch('inventario',{cant:item.cant-1},`?id=eq.${item.id}`);
+  }else if(!costo){
+    costo=parseInt(prompt(`¿Cuánto costó el par ${p.referencia} T${p.talla}? (para calcular la utilidad)`,''))||0;
+  }
+  await postVenta({fecha:hoy(),vendedor:p.vendedor||S.session.usuario,cliente:p.cliente,ref:p.referencia,talla:p.talla,cant:1,precio_unit:p.precio,total:p.precio,forma_pago:p.forma_pago,tipo_venta:'Pedido',domicilio:0,descuento:'No'},costo);
+  await dbPatch('pedidos',{estado:'Completado'},`?id=eq.${id}`);toast('Pedido entregado · registrado como venta ✓');goTo('pedidos');
+}
 async function abonarP(id){const p=S.pedidos.find(x=>x.id===id);if(!p)return;const saldo=p.precio-p.abono;const monto=Math.min(parseInt(prompt(`Abonar a ${p.cliente}\nSaldo: ${fmt(saldo)}`))||0,saldo);if(monto<=0)return;if(!await pedirComp({tipo:'Abono Pedido',desc:`Abono ${p.cliente} — ${p.referencia}`,monto,pago:p.forma_pago}))return;await Promise.all([dbPatch('pedidos',{abono:Math.min(p.abono+monto,p.precio)},`?id=eq.${id}`),dbPost('caja',{fecha:hoy(),tipo:'Abono Pedido',descripcion:`Abono ${p.cliente}`,monto,forma_pago:p.forma_pago})]);toast('Abono guardado');goTo('pedidos');}
-async function eliminarP(id){if(!confirm('¿Eliminar?'))return;await dbDel('pedidos',`?id=eq.${id}`);toast('Eliminado');goTo('pedidos');}
+// Si se cancela un pedido con abono y se le devuelve la plata al cliente, sale de caja como "Devolución"
+async function eliminarP(id){
+  const p=S.pedidos.find(x=>x.id===id);if(!p)return;
+  if(!confirm(`¿Eliminar el pedido de ${p.cliente}?`))return;
+  if(p.estado==='Pendiente'&&p.abono>0&&confirm(`El cliente abonó ${fmt(p.abono)}.\n\n¿Le devolviste la plata? (Aceptar = sale de caja como devolución)`)){
+    if(!await pedirComp({tipo:'Devolución',desc:`Devolución abono ${p.cliente} — ${p.referencia}`,monto:p.abono,pago:p.forma_pago}))return;
+    if(!await dbPost('caja',{fecha:hoy(),tipo:'Devolución',descripcion:`Devolución abono ${p.cliente} — ${p.referencia}`,monto:p.abono,forma_pago:p.forma_pago}))return;
+  }
+  await dbDel('pedidos',`?id=eq.${id}`);toast('Eliminado');goTo('pedidos');
+}
 
 /* CAJA */
 function pgCaja(){
   const{ef,ban,total}=calcSaldos();
-  const ing=S.caja.filter(r=>r.tipo!=='Gasto').reduce((a,b)=>a+(b.monto||0),0);
-  const gas=S.caja.filter(r=>r.tipo==='Gasto').reduce((a,b)=>a+(b.monto||0),0);
+  const ing=S.caja.filter(r=>!esSalida(r)).reduce((a,b)=>a+(b.monto||0),0);
+  const gas=S.caja.filter(esSalida).reduce((a,b)=>a+(b.monto||0),0);
   return`<div class="ph"><h2 class="pt"><i class="ti ti-report-money" style="color:var(--red)"></i> Caja</h2></div>
   ${cajaLive()}
   <div class="met">
     <div class="mc2"><div class="ml">Ingresos</div><div class="mv g">${fmt(ing)}</div></div>
-    <div class="mc2"><div class="ml">Gastos</div><div class="mv r">${fmt(gas)}</div></div>
+    <div class="mc2"><div class="ml">Salidas</div><div class="mv r">${fmt(gas)}</div></div>
     <div class="mc2"><div class="ml">Neto</div><div class="mv ${ing-gas>=0?'g':'r'}">${fmt(ing-gas)}</div></div>
   </div>
   ${isAdmin()?`<div class="card"><div class="ct">Registrar movimiento</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px">
-      <div class="frow"><label>Tipo</label><select id="c-tipo"><option>Gasto</option><option>Ingreso manual</option><option>Aporte Capital</option></select></div>
+      <div class="frow"><label>Tipo</label><select id="c-tipo">${TIPOS_MOV.map(t=>`<option>${t}</option>`).join('')}</select></div>
       <div class="frow"><label>Descripción</label><input id="c-desc" placeholder="Descripción"/></div>
       <div class="frow"><label>Monto</label><input id="c-mont" type="number" value="0"/></div>
       <div class="frow"><label>Forma de pago</label><select id="c-pago"><option>Efectivo</option><option>Transferencia</option><option>Bancolombia</option></select></div>
     </div>
+    <div style="font-size:11px;color:#aaa;margin-bottom:.6rem"><b>Gasto</b> baja la utilidad. <b>Retiro socio</b>, <b>Pago proveedor</b> (abono a la deuda con el proveedor, la descuenta sola) y <b>Devolución</b> sacan plata de caja pero no son gasto del negocio.</div>
     <button class="btn btn-r" onclick="regMov()"><i class="ti ti-plus"></i> Registrar</button>
   </div>`:''}
   ${S.caja.length===0?`<div class="card" style="text-align:center;color:#bbb;padding:2rem">Sin movimientos</div>`:`
   <div class="card" style="padding:0;overflow:hidden"><table class="tbl"><thead><tr><th>Fecha</th><th>Tipo</th><th>Descripción</th><th>Monto</th><th>Pago</th>${isAdmin()?'<th></th>':''}</tr></thead><tbody>
   ${S.caja.map(r=>`<tr><td style="color:#bbb;font-size:12px">${r.fecha}</td><td>${r.tipo}</td><td>${r.descripcion}</td>
-  <td style="font-weight:700;color:${r.tipo==='Gasto'?'var(--red)':'#1F5014'}">${r.tipo==='Gasto'?'−':'+'}${fmt(r.monto)}</td>
+  <td style="font-weight:700;color:${esSalida(r)?'var(--red)':'#1F5014'}">${esSalida(r)?'−':'+'}${fmt(r.monto)}</td>
   <td><span class="tag tm">${r.forma_pago||'—'}</span></td>
   ${isAdmin()?`<td><button class="btn btn-sm" onclick="delMov(${r.id})" style="color:var(--red);border-color:#F5BABA;padding:4px 7px"><i class="ti ti-trash"></i></button></td>`:''}
   </tr>`).join('')}
   </tbody></table></div>`}`;
 }
-async function regMov(){const tipo=document.getElementById('c-tipo').value;const desc=document.getElementById('c-desc').value.trim()||'Sin descripción';const monto=parseInt(document.getElementById('c-mont').value)||0;const pago=document.getElementById('c-pago').value;if(monto<=0){toast('Monto inválido',false);return;}if(!await pedirComp({tipo,desc,monto,pago}))return;await dbPost('caja',{fecha:hoy(),tipo,descripcion:desc,monto,forma_pago:pago});toast('Guardado ✓');goTo('caja');}
+async function regMov(){
+  if(!isAdmin())return;
+  const tipo=document.getElementById('c-tipo').value;const desc=document.getElementById('c-desc').value.trim()||'Sin descripción';const monto=parseInt(document.getElementById('c-mont').value)||0;const pago=document.getElementById('c-pago').value;
+  if(monto<=0){toast('Monto inválido',false);return;}
+  if(esSalida({tipo})){const{ef,ban}=calcSaldos();const hay=pago==='Efectivo'?ef:ban;if(monto>hay&&!confirm(`Según el sistema solo hay ${fmt(hay)} en ${pago==='Efectivo'?'efectivo':'banco'}.\n¿Registrar la salida de ${fmt(monto)} de todas formas?`))return;}
+  if(!await pedirComp({tipo,desc,monto,pago}))return;
+  if(!await dbPost('caja',{fecha:hoy(),tipo,descripcion:desc,monto,forma_pago:pago}))return;
+  if(tipo==='Pago proveedor'){
+    const c=await cfgActual();
+    if(c){const d=Math.max(0,(c.deuda_proveedor||0)-monto);await dbPatch('config',{deuda_proveedor:d},`?id=eq.${c.id}`);S.cfg.deuda_proveedor=d;toast('Guardado ✓ · deuda proveedor: '+fmt(d));goTo('caja');return;}
+  }
+  toast('Guardado ✓');goTo('caja');
+}
 async function delMov(id){if(!confirm('¿Eliminar?'))return;await dbDel('caja',`?id=eq.${id}`);toast('Eliminado');goTo('caja');}
 
 /* FINANZAS */
@@ -859,7 +968,8 @@ function pgFin(){
   const utilBruta=S.ventas.reduce((a,v)=>a+ventaNeta(v),0)-costoMes;
   const utilNeta=utilBruta-gastMes;
   const porCobrar=S.ventas.filter(v=>v.forma_pago==='Crédito').reduce((a,v)=>a+(v.total||0),0);
-  const estado=total-gf-S.cfg.deuda_proveedor;
+  const retiros=S.caja.filter(r=>r.tipo==='Retiro socio').reduce((a,b)=>a+(b.monto||0),0);
+  const gfP=gfPend();
   return`<div class="ph"><h2 class="pt"><i class="ti ti-chart-pie" style="color:var(--red)"></i> Finanzas</h2></div>
   ${cajaLive()}
   <div class="met">
@@ -871,27 +981,32 @@ function pgFin(){
     <div class="mc2"><div class="ml">Utilidad bruta</div><div class="mv ${utilBruta>=0?'g':'r'}" style="font-size:14px">${fmt(utilBruta)}</div></div>
     <div class="mc2"><div class="ml">Utilidad neta</div><div class="mv ${utilNeta>=0?'g':'r'}" style="font-size:14px">${fmt(utilNeta)}</div></div>`:''}
     ${porCobrar?`<div class="mc2"><div class="ml">Vendido a crédito</div><div class="mv b" style="font-size:14px">${fmt(porCobrar)}</div></div>`:''}
+    ${retiros?`<div class="mc2"><div class="ml">Retiros socios</div><div class="mv" style="font-size:14px">${fmt(retiros)}</div></div>`:''}
   </div>
   ${isAdmin()&&sinCosto?`<div class="card" style="background:#FFF8E1;border-color:#FFE082;font-size:12px;color:#8D6E00">⚠ ${sinCosto} par(es) vendidos sin costo registrado: la utilidad sale más alta de lo real. Pon el P. Compra en Inventario.</div>`:''}
   <div class="cols2">
   <div class="card"><div class="ct" style="display:flex;justify-content:space-between;align-items:center">Gastos fijos ${isAdmin()?`<button class="btn btn-g btn-sm" onclick="showAddGasto()"><i class="ti ti-plus"></i></button>`:''}</div>
   <div id="add-gasto-form"></div>
   ${S.cfg.gastos_fijos.length===0?`<div style="color:#bbb;font-size:13px">Sin gastos fijos</div>`:
-  S.cfg.gastos_fijos.map((g,i)=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid #F5F5F5">
-    <span style="font-size:13px">${g.nombre}</span>
+  S.cfg.gastos_fijos.map((g,i)=>{const pag=gfPagado(g);return`<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid #F5F5F5">
+    <span style="font-size:13px">${esc(g.nombre)} ${pag?'<span class="tag tm" style="font-size:10px">pagado</span>':'<span class="tag td" style="font-size:10px">pendiente</span>'}</span>
     <div style="display:flex;align-items:center;gap:6px">
       <span style="font-weight:600">${fmt(g.monto)}</span>
+      ${isAdmin()&&!pag?`<button class="btn btn-sm btn-g" onclick="pagarGF(${i})" style="padding:4px 8px">Pagar</button>`:''}
       ${isAdmin()?`<button class="btn btn-sm" onclick="delGasto(${i})" style="color:var(--red);border-color:#F5BABA;padding:4px 7px"><i class="ti ti-trash"></i></button>`:''}
     </div>
-  </div>`).join('')}
+  </div>`;}).join('')}
   <div style="display:flex;justify-content:space-between;padding:7px 0;font-weight:600"><span>Total</span><span style="color:var(--red)">${fmt(gf)}</span></div>
+  <div style="display:flex;justify-content:space-between;font-size:12px;color:#aaa;padding:4px 0"><span>Falta pagar este mes</span><span style="color:${gfP?'var(--red)':'#1F5014'};font-weight:600">${fmt(gfP)}</span></div>
   <div style="display:flex;justify-content:space-between;font-size:12px;color:#aaa;padding:4px 0"><span>Semanal</span><span>${fmt(gsem)}</span></div>
   </div>
+  <div>
   <div class="card"><div class="ct">Meta · ${S.cfg.fecha_corte||'—'}</div>
     <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span style="color:#aaa">Pares vendidos</span><span style="font-weight:600">${pv} / ${meta}</span></div>
     <div class="pw"><div class="pf" style="width:${pct}%;background:${pct>=100?'#1F5014':'var(--red)'}"></div></div>
-    <div style="font-size:12px;color:#aaa;text-align:right;margin-bottom:10px">${pct}%</div>
-    <div class="ebox ${estado>=0?'ep':'en'}">${estado>=0?'✓ '+fmt(estado)+' disponible':'⚠ Déficit '+fmt(Math.abs(estado))}</div>
+    <div style="font-size:12px;color:#aaa;text-align:right">${pct}%</div>
+  </div>
+  ${resumenPos()}
   </div></div>
   <div class="card"><div class="ct">Ventas del mes</div>
   ${S.ventas.length===0?`<div style="color:#bbb;text-align:center;padding:1.5rem">Sin ventas</div>`:
@@ -908,10 +1023,27 @@ function showAddGasto(){document.getElementById('add-gasto-form').innerHTML=`<di
 </div>`;}
 async function delGasto(i){if(!confirm('¿Eliminar?'))return;S.cfg.gastos_fijos.splice(i,1);await dbPatch('config',{gastos_fijos:S.cfg.gastos_fijos},`?id=eq.${S.cfg.id}`);toast('Eliminado');goTo('finanzas');}
 async function addGasto(){const n=document.getElementById('ng-n').value.trim();const m=parseInt(document.getElementById('ng-m').value)||0;if(!n||!m){toast('Ingresa concepto y monto',false);return;}S.cfg.gastos_fijos.push({nombre:n,monto:m});await dbPatch('config',{gastos_fijos:S.cfg.gastos_fijos},`?id=eq.${S.cfg.id}`);toast('Guardado ✓');goTo('finanzas');}
+// Pagar un gasto fijo: sale de caja y queda marcado como pagado hasta el próximo cierre de mes
+async function pagarGF(i){
+  const g=S.cfg.gastos_fijos[i];if(!g||!isAdmin())return;
+  const pago=await elegir(`Pagar ${g.nombre} · ${fmt(g.monto)}`,PAGOS,'¿Con qué se paga?');if(!pago)return;
+  if(!await pedirComp({tipo:'Gasto',desc:descGF(g),monto:g.monto,pago}))return;
+  if(await dbPost('caja',{fecha:hoy(),tipo:'Gasto',descripcion:descGF(g),monto:g.monto,forma_pago:pago}))toast(`${g.nombre} pagado ✓`);
+  goTo('finanzas');
+}
 // Anular una venta: devuelve el stock y quita su entrada de caja y su comisión (antes la plata se quedaba en caja)
 async function delVenta(id){
   const v=S.ventas.find(x=>x.id===id);if(!v)return;
   if(v.forma_pago==='Crédito'){toast('Es una venta a crédito: elimínala desde Créditos',false);return;}
+  // Venta de un pedido entregado: la plata entró como abonos del pedido, no como "Venta"
+  if(v.tipo_venta==='Pedido'){
+    if(!confirm(`¿Quitar la venta del pedido de ${v.cliente} (${v.ref} T${v.talla})?\n\nLos abonos siguen en caja. Si devolviste la plata, regístralo en Caja como "Devolución".`))return;
+    if(confirm('¿El zapato regresó a la tienda? (Aceptar = vuelve al inventario)')){
+      const rows=await dbGet('inventario',`?nombre=eq.${encodeURIComponent(v.ref)}&talla=eq.${v.talla}`);
+      if(rows&&rows[0])await dbPatch('inventario',{cant:rows[0].cant+(v.cant||1)},`?id=eq.${rows[0].id}`);
+    }
+    await dbDel('ventas',`?id=eq.${id}`);toast('Venta quitada');goTo('finanzas');return;
+  }
   if(!confirm(`¿Eliminar la venta de ${v.ref} T${v.talla} a ${v.cliente}?\n\nSe devuelve el stock y se quitan ${fmt(v.total)} de caja.`))return;
   const rows=await dbGet('inventario',`?nombre=eq.${encodeURIComponent(v.ref)}&talla=eq.${v.talla}`);
   if(rows&&rows[0])await dbPatch('inventario',{cant:rows[0].cant+(v.cant||0)},`?id=eq.${rows[0].id}`);
@@ -935,12 +1067,13 @@ function pgSocios(){
     <div class="mc2"><div class="ml">En efectivo</div><div class="mv b">${fmt(totEf)}</div></div>
     <div class="mc2"><div class="ml">En inventario</div><div class="mv b">${fmt(totInv)}</div></div>
   </div>
-  <div class="card" style="border:2px solid #0C447C"><div class="ct" style="color:#0C447C">Registrar socio</div>
+  ${isAdmin()?`<div class="card" style="border:2px solid #0C447C"><div class="ct" style="color:#0C447C">Registrar socio</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px">
       <div class="frow"><label>Nombre</label><input id="s-nom" placeholder="Nombre del socio"/></div>
-      <div class="frow"><label>Fecha de ingreso</label><input id="s-fecha" type="date" value="${new Date().toISOString().split('T')[0]}"/></div>
+      <div class="frow"><label>Fecha de ingreso</label><input id="s-fecha" type="date" value="${isoLocal()}"/></div>
       <div class="frow"><label>Aporte efectivo</label><input id="s-ef" type="number" value="0" oninput="sCalc()"/></div>
       <div class="frow"><label>Aporte inventario</label><input id="s-inv" type="number" value="0" oninput="sCalc()"/></div>
+      <div class="frow"><label>Aporte llegó por</label><select id="s-pago">${PAGOS.map(p=>`<option>${p}</option>`).join('')}</select></div>
       <div class="frow"><label>Notas</label><input id="s-notas" placeholder="Descripción..."/></div>
     </div>
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:.75rem">
@@ -948,7 +1081,7 @@ function pgSocios(){
       <span id="s-tot" style="font-weight:700;color:#0C447C;font-size:16px">${fmt(0)}</span>
     </div>
     <button class="btn btn-b" onclick="regSocio()"><i class="ti ti-plus"></i> Registrar socio</button>
-  </div>
+  </div>`:''}
   <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px">
   ${S.socios.length===0?`<div class="card" style="text-align:center;color:#bbb;padding:2rem">Sin socios registrados</div>`:
   S.socios.map(s=>`<div class="sc">
@@ -985,15 +1118,18 @@ async function regSocio(){
   const nom=document.getElementById('s-nom').value.trim();const fecha=document.getElementById('s-fecha').value;
   const ef=parseInt(document.getElementById('s-ef').value)||0;const inv=parseInt(document.getElementById('s-inv').value)||0;
   const notas=document.getElementById('s-notas').value.trim();
+  // Antes todo aporte quedaba como "Transferencia" (en banco) aunque fuera en efectivo
+  const pago=document.getElementById('s-pago').value;
   if(!nom){toast('Ingresa el nombre',false);return;}
-  if(ef>0&&!await pedirComp({tipo:'Aporte Capital',desc:`Aporte de ${nom}`,monto:ef,pago:'Transferencia'}))return;
-  await dbPost('socios',{nombre:nom,fecha_ingreso:fecha,aporte_efectivo:ef,aporte_inventario:inv,notas});
-  if(ef>0)await dbPost('caja',{fecha:hoy(),tipo:'Aporte Capital',descripcion:`Aporte de ${nom}`,monto:ef,forma_pago:'Transferencia'});
+  if(ef<0||inv<0){toast('Los aportes no pueden ser negativos',false);return;}
+  if(ef>0&&!await pedirComp({tipo:'Aporte Capital',desc:`Aporte de ${nom}`,monto:ef,pago}))return;
+  if(!await dbPost('socios',{nombre:nom,fecha_ingreso:fecha,aporte_efectivo:ef,aporte_inventario:inv,notas}))return;
+  if(ef>0)await dbPost('caja',{fecha:hoy(),tipo:'Aporte Capital',descripcion:`Aporte de ${nom}`,monto:ef,forma_pago:pago});
   const cs=[...(S.cfg.capital_social||[]),{nombre:nom,fecha,efectivo:ef,inventario:inv}];
   await dbPatch('config',{capital_social:cs},`?id=eq.${S.cfg.id}`);
   toast('Socio registrado ✓');goTo('socios');
 }
-async function delSocio(id){if(!confirm('¿Eliminar?'))return;await dbDel('socios',`?id=eq.${id}`);toast('Eliminado');goTo('socios');}
+async function delSocio(id){if(!confirm('¿Eliminar el socio?\n\nSu aporte en caja no se borra. Si le devolviste la plata, regístralo en Caja como "Retiro socio".'))return;await dbDel('socios',`?id=eq.${id}`);toast('Eliminado');goTo('socios');}
 
 /* COMISIONES */
 function pgCom(){const tot={};S.comisiones.forEach(c=>{if(!tot[c.vendedor])tot[c.vendedor]=0;tot[c.vendedor]+=c.bono;});
@@ -1063,6 +1199,10 @@ async function cierreMes(){
   ]);
   if(!ventas||!caja||!comisiones||!inventario){toast('No se pudieron leer los datos. No se cerró el mes',false);return;}
   const cfgData=cfg&&cfg[0]?cfg[0]:S.cfg;
+  // El cierre borra las comisiones: si alguna no está en una nómina, se perdería
+  S.nomina=await dbGet('nomina','?order=id.desc')||S.nomina||[];
+  const sinLiq=comisiones.filter(c=>!comisionLiquidada(c));
+  if(sinLiq.length&&!confirm(`Hay ${sinLiq.length} comisión(es) por ${fmt(sinLiq.reduce((a,c)=>a+(c.bono||0),0))} que no están en ninguna nómina liquidada.\nSi cierras el mes se borran.\n\nCancelar = ir a Nómina a liquidarlas primero.`)){goTo('nomina');return;}
   // Saldo actual real (antes comparaba fechas como texto y dejaba por fuera movimientos)
   const{ef,ban}=saldoDe(caja,cfgData);
   // Calcular métricas del mes
@@ -1092,7 +1232,11 @@ async function cierreMes(){
     total_ventas:totalVentas,total_pares:totalPares,
     total_gastos:totalGastos,utilidad_bruta:utilBruta,
     utilidad_neta:utilNeta,total_comisiones:totalComisiones,
-    resumen:{saldo_efectivo:ef,saldo_banco:ban,ventas_count:ventas.length,costo_vendido:costoVendido,compras_mercancia:totalCompras,pares_sin_costo:sinCosto}
+    resumen:{saldo_efectivo:ef,saldo_banco:ban,ventas_count:ventas.length,costo_vendido:costoVendido,compras_mercancia:totalCompras,pares_sin_costo:sinCosto,
+      retiros_socios:caja.filter(r=>r.tipo==='Retiro socio').reduce((a,b)=>a+(b.monto||0),0),
+      devoluciones:caja.filter(r=>r.tipo==='Devolución').reduce((a,b)=>a+(b.monto||0),0),
+      aportes_capital:caja.filter(r=>r.tipo==='Aporte Capital').reduce((a,b)=>a+(b.monto||0),0),
+      deuda_proveedor:cfgData.deuda_proveedor||0}
   });
   if(!guardado){toast('No se pudo guardar el cierre. No se borró nada',false);return;}
   // 2. Actualizar saldo base con el saldo final del mes.
@@ -1209,6 +1353,10 @@ async function regCredito(){
   const notas=document.getElementById('cr-notas').value.trim();
   if(!cli){toast('Ingresa el cliente',false);return;}
   if(!prod){toast('Elige el zapato del inventario',false);return;}
+  if(cant<1||cuotas<1){toast('Cantidad y cuotas deben ser al menos 1',false);return;}
+  if(precio<=0){toast('El precio no puede ser $0',false);return;}
+  if(abono<0||abono>precio){toast('El abono no puede ser mayor que el precio',false);return;}
+  if(prod.pc&&precio<prod.pc*cant&&!confirm(`Ojo: ${fmt(precio)} está por debajo del costo (${fmt(prod.pc*cant)}).\n¿Vender con pérdida?`))return;
   const ref=prod.nombre,talla=prod.talla;
   // Verifica el stock real antes de descontar (otro vendedor pudo venderlo)
   const act=await dbGet('inventario',`?id=eq.${prod.id}`);
@@ -1357,8 +1505,9 @@ async function regPedidoProv(){
   const precio=parseInt(document.getElementById('pp-precio').value)||0;
   const fecha_entrega=document.getElementById('pp-fecha').value;
   const notas=document.getElementById('pp-notas').value.trim();
-  if(!ref){toast('Ingresa la referencia',false);return;}
-  await dbPost('pedidos_proveedor',{fecha:hoy(),proveedor:prov,ref,talla,genero:gen,cant,precio_compra:precio,total:cant*precio,estado:'Pendiente',fecha_entrega:fecha_entrega||'Por confirmar',notas});
+  if(!ref||!talla){toast('Ingresa la referencia y la talla',false);return;}
+  if(cant<1){toast('La cantidad debe ser al menos 1',false);return;}
+  if(!await dbPost('pedidos_proveedor',{fecha:hoy(),proveedor:prov,ref,talla,genero:gen,cant,precio_compra:precio,total:cant*precio,estado:'Pendiente',fecha_entrega:fecha_entrega||'Por confirmar',notas}))return;
   toast('Pedido registrado ✓');goTo('pedidos-proveedor');
 }
 async function recibirPedidoProv(id){
@@ -1373,18 +1522,36 @@ async function recibirPedidoProv(id){
     pv=parseInt(prompt(`Precio de venta para ${p.ref} T${p.talla}:`,ref?ref.precio:165000))||0;
     if(pv<=0){toast('Necesito el precio de venta para agregarlo',false);return;}
   }
-  if(!await pedirComp({tipo:'Gasto',desc:`Compra: ${p.ref} T${p.talla} x${p.cant}`,monto:p.total,pago:'Transferencia'}))return;
+  // Sin precio de compra (p. ej. orden automática) el par entraba con costo $0 y la utilidad salía inflada
+  let pcU=p.precio_compra||0;
+  if(!pcU){pcU=parseInt(prompt(`¿Cuánto costó cada par de ${p.ref} T${p.talla}?`,''))||0;if(pcU<=0){toast('Necesito el precio de compra',false);return;}}
+  const total=pcU*p.cant;
+  // Antes siempre se daba por pagado por transferencia; ahora se elige, o queda como deuda con el proveedor
+  const CRED='A crédito (suma a deuda proveedor)';
+  const pago=await elegir(`Pago de ${fmt(total)} al proveedor`,[...PAGOS,CRED],`${p.ref} T${p.talla} x${p.cant} · ${fmt(pcU)} c/u`);
+  if(!pago)return;
+  const desc=`Compra: ${p.ref} T${p.talla} x${p.cant}`;
+  if(pago!==CRED&&!await pedirComp({tipo:'Gasto',desc,monto:total,pago}))return;
+  let okInv;
   if(exist[0]){
     // Costo promedio ponderado entre lo que había y lo que llega
     const e=exist[0],tot=e.cant+p.cant;
-    const pc=p.precio_compra?Math.round(((e.pc||p.precio_compra)*e.cant+p.precio_compra*p.cant)/tot):e.pc;
-    await dbPatch('inventario',{cant:tot,pc},`?id=eq.${e.id}`);
+    const pc=tot>0?Math.round(((e.pc||pcU)*e.cant+pcU*p.cant)/tot):pcU;
+    okInv=await dbPatch('inventario',{cant:tot,pc},`?id=eq.${e.id}`);
   }else{
-    await dbPost('inventario',{nombre:p.ref,talla:p.talla,genero:p.genero||'MIXTO',cant:p.cant,precio:pv,pc:p.precio_compra,origen:'nuevo'});
+    okInv=await dbPost('inventario',{nombre:p.ref,talla:p.talla,genero:p.genero||'MIXTO',cant:p.cant,precio:pv,pc:pcU,origen:'nuevo'});
   }
-  await dbPatch('pedidos_proveedor',{estado:'Recibido'},`?id=eq.${id}`);
-  await dbPost('caja',{fecha:hoy(),tipo:'Gasto',descripcion:`Compra: ${p.ref} T${p.talla} x${p.cant}`,monto:p.total,forma_pago:'Transferencia'});
-  toast('Recibido · inventario actualizado ✓');goTo('pedidos-proveedor');
+  if(!okInv)return;
+  await dbPatch('pedidos_proveedor',{estado:'Recibido',precio_compra:pcU,total},`?id=eq.${id}`);
+  if(pago===CRED){
+    const c=await cfgActual();
+    if(c){const d=(c.deuda_proveedor||0)+total;await dbPatch('config',{deuda_proveedor:d},`?id=eq.${c.id}`);S.cfg.deuda_proveedor=d;}
+    toast(`Recibido ✓ · deuda proveedor +${fmt(total)}. Cuando pagues, regístralo en Caja como "Pago proveedor"`);
+  }else{
+    await dbPost('caja',{fecha:hoy(),tipo:'Gasto',descripcion:desc,monto:total,forma_pago:pago});
+    toast('Recibido · inventario actualizado ✓');
+  }
+  goTo('pedidos-proveedor');
 }
 async function delPedidoProv(id){if(!confirm('¿Eliminar?'))return;await dbDel('pedidos_proveedor',`?id=eq.${id}`);toast('Eliminado');goTo('pedidos-proveedor');}
 function showAddMin(){document.getElementById('min-form').innerHTML=`<div class="cols-min">
@@ -1419,38 +1586,41 @@ function pgNomina(){
   const pend=(S.nomina||[]).filter(n=>n.estado==='Pendiente');
   const pag=(S.nomina||[]).filter(n=>n.estado==='Pagado');
   const totalPend=pend.reduce((a,n)=>a+(n.total||0),0);
-  const comisionesPeriodo=(S.comisiones||[]).reduce((a,c)=>a+(c.bono||0),0);
-  const hoyDate=new Date();
-  const mes=hoyDate.getMonth();const anio=hoyDate.getFullYear();const dia=hoyDate.getDate();
-  const inicioQ=`${anio}-${String(mes+1).padStart(2,'0')}-${dia<=15?'01':'16'}`;
+  // Quincena actual: 1–15 o 16–fin de mes
+  const hoyDate=new Date();const dia=hoyDate.getDate();
+  const iniQ=new Date(hoyDate.getFullYear(),hoyDate.getMonth(),dia<=15?1:16);
+  const finQ=dia<=15?new Date(hoyDate.getFullYear(),hoyDate.getMonth(),15):new Date(hoyDate.getFullYear(),hoyDate.getMonth()+1,0);
+  const emp0=USERS[0].usuario;
+  const com0=comisionesDe(emp0,isoLocal(iniQ),isoLocal(finQ));
+  const sinLiquidar=(S.comisiones||[]).filter(c=>!comisionLiquidada(c)).reduce((a,c)=>a+(c.bono||0),0);
   const salarioBase=15*20000;
   return`<div class="ph"><h2 class="pt"><i class="ti ti-users" style="color:var(--red)"></i> Nómina</h2></div>
   <div class="met">
     <div class="mc2"><div class="ml">Por pagar</div><div class="mv r" style="font-size:14px">${fmt(totalPend)}</div></div>
     <div class="mc2"><div class="ml">Pagos realizados</div><div class="mv g">${pag.length}</div></div>
-    <div class="mc2"><div class="ml">Comisiones acum.</div><div class="mv b" style="font-size:14px">${fmt(comisionesPeriodo)}</div></div>
-    <div class="mc2"><div class="ml">Valor día</div><div class="mv">$20.000</div></div>
+    <div class="mc2"><div class="ml">Comisiones sin liquidar</div><div class="mv b" style="font-size:14px">${fmt(sinLiquidar)}</div></div>
   </div>
-  <div class="card" style="border:2px solid #1F5014"><div class="ct" style="color:#1F5014">Liquidar quincena — Ismael</div>
+  ${isAdmin()?`<div class="card" style="border:2px solid #1F5014"><div class="ct" style="color:#1F5014">Liquidar quincena</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px">
-      <div class="frow"><label>Empleado</label><input id="nm-emp" value="Ismael"/></div>
-      <div class="frow"><label>Período inicio</label><input id="nm-ini" type="date" value="${inicioQ}"/></div>
-      <div class="frow"><label>Período fin</label><input id="nm-fin" type="date"/></div>
+      <div class="frow"><label>Empleado</label><select id="nm-emp" onchange="nmCom()">${USERS.map(u=>`<option value="${u.usuario}">${u.usuario}</option>`).join('')}</select></div>
+      <div class="frow"><label>Período inicio</label><input id="nm-ini" type="date" value="${isoLocal(iniQ)}" onchange="nmCom()"/></div>
+      <div class="frow"><label>Período fin</label><input id="nm-fin" type="date" value="${isoLocal(finQ)}" onchange="nmCom()"/></div>
       <div class="frow"><label>Días trabajados</label><input id="nm-dias" type="number" value="15" min="1" max="31" oninput="nmCalc()"/></div>
       <div class="frow"><label>Valor por día</label><input id="nm-vdia" type="number" value="20000" oninput="nmCalc()"/></div>
-      <div class="frow"><label>Comisiones</label><input id="nm-com" type="number" value="${comisionesPeriodo}" oninput="nmCalc()"/></div>
+      <div class="frow"><label>Comisiones del período</label><input id="nm-com" type="number" value="${com0}" oninput="nmCalc()"/></div>
       <div class="frow"><label>Deducciones</label><input id="nm-ded" type="number" value="0" oninput="nmCalc()"/></div>
-      <div class="frow"><label>Forma de pago</label><select id="nm-pago"><option>Efectivo</option><option>Transferencia</option><option>Bancolombia</option></select></div>
+      <div class="frow"><label>Forma de pago</label><select id="nm-pago">${PAGOS.map(p=>`<option>${p}</option>`).join('')}</select></div>
       <div class="frow"><label>Notas</label><input id="nm-notas" placeholder="Observaciones..."/></div>
     </div>
+    <div style="font-size:11px;color:#aaa">Las comisiones se calculan solas con las ventas de ese empleado dentro del período (no se pagan dos veces).</div>
     <div style="background:#EAF5E3;border-radius:10px;padding:12px;margin:.75rem 0;display:flex;gap:20px;flex-wrap:wrap;border:1px solid #B0D9A0">
       <div><div style="font-size:11px;color:#aaa">Salario base</div><div id="nm-base" style="font-size:17px;font-weight:700;color:#1F5014">${fmt(salarioBase)}</div></div>
-      <div><div style="font-size:11px;color:#aaa">+ Comisiones</div><div id="nm-cshow" style="font-size:17px;font-weight:700;color:#0C447C">${fmt(comisionesPeriodo)}</div></div>
+      <div><div style="font-size:11px;color:#aaa">+ Comisiones</div><div id="nm-cshow" style="font-size:17px;font-weight:700;color:#0C447C">${fmt(com0)}</div></div>
       <div><div style="font-size:11px;color:#aaa">− Deducciones</div><div id="nm-dshow" style="font-size:17px;font-weight:700;color:var(--red)">${fmt(0)}</div></div>
-      <div><div style="font-size:11px;color:#aaa">TOTAL A PAGAR</div><div id="nm-total" style="font-size:22px;font-weight:700;color:#1A1A1A">${fmt(salarioBase+comisionesPeriodo)}</div></div>
+      <div><div style="font-size:11px;color:#aaa">TOTAL A PAGAR</div><div id="nm-total" style="font-size:22px;font-weight:700;color:#1A1A1A">${fmt(salarioBase+com0)}</div></div>
     </div>
     <button class="btn btn-g" onclick="regNomina()"><i class="ti ti-cash"></i> Liquidar quincena</button>
-  </div>
+  </div>`:''}
   ${pend.length?`<div class="card"><div class="ct" style="display:flex;justify-content:space-between">Pendientes <span style="color:var(--red)">${fmt(totalPend)}</span></div>
   ${pend.map(n=>`<div style="border:1px solid #F0F0F0;border-radius:10px;padding:.85rem;margin-bottom:.6rem">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
@@ -1467,8 +1637,8 @@ function pgNomina(){
       <div style="background:#F5F4F2;border-radius:6px;padding:6px;text-align:center"><div style="color:#aaa;font-size:10px">Deducciones</div><div style="font-weight:600;color:var(--red)">${fmt(n.deducciones)}</div></div>
     </div>
     <div style="display:flex;gap:6px">
-      <button class="btn btn-g btn-sm" onclick="pagarNomina(${n.id},${n.total},'${n.empleado}','${n.forma_pago||'Efectivo'}')"><i class="ti ti-cash"></i> Confirmar pago</button>
-      ${isAdmin()?`<button class="btn btn-sm" onclick="delNomina(${n.id})" style="color:var(--red);border-color:#F5BABA"><i class="ti ti-trash"></i></button>`:''}
+      ${isAdmin()?`<button class="btn btn-g btn-sm" onclick="pagarNomina(${n.id})"><i class="ti ti-cash"></i> Confirmar pago</button>
+      <button class="btn btn-sm" onclick="delNomina(${n.id})" style="color:var(--red);border-color:#F5BABA"><i class="ti ti-trash"></i></button>`:''}
     </div>
   </div>`).join('')}</div>`:''}
   ${pag.length?`<div class="card"><div class="ct">Historial de pagos (${pag.length})</div>
@@ -1489,7 +1659,7 @@ function nmCalc(){
   if(ed)ed.textContent=fmt(ded);if(et)et.textContent=fmt(total);
 }
 async function regNomina(){
-  const emp=document.getElementById('nm-emp').value.trim();
+  const emp=document.getElementById('nm-emp').value;
   const ini=document.getElementById('nm-ini').value;
   const fin=document.getElementById('nm-fin').value;
   const dias=parseInt(document.getElementById('nm-dias').value)||15;
@@ -1498,19 +1668,39 @@ async function regNomina(){
   const ded=parseInt(document.getElementById('nm-ded').value)||0;
   const pago=document.getElementById('nm-pago').value;
   const notas=document.getElementById('nm-notas').value.trim();
+  if(!isAdmin())return;
   if(!emp){toast('Ingresa el nombre del empleado',false);return;}
-  if(!fin){toast('Selecciona la fecha fin del período',false);return;}
+  if(!ini||!fin||fin<ini){toast('Revisa las fechas del período',false);return;}
+  // No liquidar dos veces el mismo período al mismo empleado
+  const cruce=(S.nomina||[]).find(n=>n.empleado===emp&&n.periodo_inicio&&n.periodo_fin&&n.periodo_inicio<=fin&&n.periodo_fin>=ini);
+  if(cruce&&!confirm(`${emp} ya tiene una nómina del ${cruce.periodo_inicio} al ${cruce.periodo_fin} (${fmt(cruce.total)}).\n¿Liquidar otra que se cruza con ese período?`))return;
   const base=dias*vdia;const total=Math.max(0,base+com-ded);
-  await dbPost('nomina',{fecha:hoy(),empleado:emp,periodo_inicio:ini,periodo_fin:fin,dias_trabajados:dias,valor_dia:vdia,salario_base:base,comisiones:com,deducciones:ded,total,forma_pago:pago,notas,estado:'Pendiente'});
+  if(!await dbPost('nomina',{fecha:hoy(),empleado:emp,periodo_inicio:ini,periodo_fin:fin,dias_trabajados:dias,valor_dia:vdia,salario_base:base,comisiones:com,deducciones:ded,total,forma_pago:pago,notas,estado:'Pendiente'}))return;
   toast('Nómina liquidada ✓');goTo('nomina');
 }
-async function pagarNomina(id,total,emp,pago){
+// Comisiones de un vendedor entre dos fechas (yyyy-mm-dd). Antes se sumaban las de todos y de todo el mes,
+// así que la segunda quincena volvía a pagar las comisiones de la primera.
+function comisionesDe(emp,ini,fin){
+  const a=parseFecha(ini),b=parseFecha(fin);
+  return(S.comisiones||[]).filter(c=>{
+    if(c.vendedor!==emp)return false;const f=parseFecha(c.fecha);
+    return f&&(!a||f>=a)&&(!b||f<=b);
+  }).reduce((s,c)=>s+(c.bono||0),0);
+}
+const comisionLiquidada=c=>{const f=parseFecha(c.fecha);return(S.nomina||[]).some(n=>n.empleado===c.vendedor&&n.periodo_inicio&&n.periodo_fin&&f>=parseFecha(n.periodo_inicio)&&f<=parseFecha(n.periodo_fin));};
+function nmCom(){
+  const emp=document.getElementById('nm-emp')?.value;
+  const el=document.getElementById('nm-com');
+  if(el)el.value=comisionesDe(emp,document.getElementById('nm-ini')?.value,document.getElementById('nm-fin')?.value);
+  nmCalc();
+}
+async function pagarNomina(id){
+  const n=(S.nomina||[]).find(x=>x.id===id);if(!n||!isAdmin())return;
+  const total=n.total,emp=n.empleado,pago=n.forma_pago||'Efectivo';
   if(!confirm(`¿Confirmar pago de ${fmt(total)} a ${emp}?`))return;
-  if(!await pedirComp({tipo:'Gasto',desc:`Nómina quincena — ${emp}`,monto:total,pago:pago||'Efectivo'}))return;
-  await Promise.all([
-    dbPatch('nomina',{estado:'Pagado'},`?id=eq.${id}`),
-    dbPost('caja',{fecha:hoy(),tipo:'Gasto',descripcion:`Nómina quincena — ${emp}`,monto:total,forma_pago:pago||'Efectivo'}),
-  ]);
+  if(!await pedirComp({tipo:'Gasto',desc:`Nómina quincena — ${emp}`,monto:total,pago}))return;
+  if(!await dbPost('caja',{fecha:hoy(),tipo:'Gasto',descripcion:`Nómina quincena — ${emp}`,monto:total,forma_pago:pago}))return;
+  await dbPatch('nomina',{estado:'Pagado'},`?id=eq.${id}`);
   toast('Pago registrado ✓');goTo('nomina');
 }
 async function delNomina(id){if(!confirm('¿Eliminar?'))return;await dbDel('nomina',`?id=eq.${id}`);toast('Eliminado');goTo('nomina');}
@@ -1562,6 +1752,13 @@ function pgCierres(){
   </div>`).join('')}`;
 }
 async function delCierre(id){if(!confirm('¿Eliminar este cierre?'))return;await dbDel('cierres_mes',`?id=eq.${id}`);toast('Eliminado');goTo('cierres');}
+
+// Un doble clic ya no registra dos ventas, dos abonos o dos pagos
+regVenta=una(regVenta);regPedido=una(regPedido);completarP=una(completarP);abonarP=una(abonarP);eliminarP=una(eliminarP);
+regMov=una(regMov);delMov=una(delMov);pagarGF=una(pagarGF);addGasto=una(addGasto);delVenta=una(delVenta);regSocio=una(regSocio);
+regCredito=una(regCredito);abonarCredito=una(abonarCredito);abonarCreditoLibre=una(abonarCreditoLibre);cerrarCredito=una(cerrarCredito);delCredito=una(delCredito);
+recibirPedidoProv=una(recibirPedidoProv);regPedidoProv=una(regPedidoProv);autoOrden=una(autoOrden);
+regNomina=una(regNomina);pagarNomina=una(pagarNomina);cierreMes=una(cierreMes);limpiarCaja=una(limpiarCaja);saveProd=una(saveProd);
 
 S.session=Sesion.cargar();
 render();
